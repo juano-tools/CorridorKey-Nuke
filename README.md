@@ -19,6 +19,8 @@ Antes de empezar, comprueba tres cosas:
 
 ### 1. Descargar el paquete
 
+Si te enviaron el ZIP por correo, Drive o la red del estudio, salta al punto 3 (extraerlo). Si lo bajas de GitHub:
+
 1. Entra a la página del repositorio en GitHub con tu cuenta (es privado: tienes que haber aceptado la invitación que llegó a tu correo).
 2. Pulsa el botón verde **Code** y elige **Download ZIP**. Se baja un archivo `CorridorKey-Nuke-main.zip` (pesa poco: el paquete no trae los modelos, el instalador los baja después).
 3. Haz clic derecho sobre el ZIP y elige **Extraer todo...**. Déjalo en una carpeta normal, por ejemplo `C:\Herramientas\CorridorKey-Nuke`. **No lo ejecutes desde dentro del ZIP**: el instalador necesita ver la carpeta `nuke` que viene junto a él.
