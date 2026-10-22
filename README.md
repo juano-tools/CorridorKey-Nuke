@@ -9,16 +9,53 @@ Este paquete no incluye CorridorKey ni sus modelos: el instalador los descarga d
 - Nuke 15.1 o 17 (Python estándar, sin compilar nada).
 - Unos 15 GB libres y conexión a internet durante la instalación.
 
-## Instalar (o actualizar)
+## Descargar e instalar (paso a paso)
 
-1. Copia esta carpeta a tu PC (o ábrela desde la carpeta compartida).
-2. Doble clic en **instalar.bat**. La primera vez tarda entre 5 y 30 minutos según tu conexión. Si Windows pregunta, elige "Más información" y "Ejecutar de todos modos".
-3. Reinicia Nuke. Aparece el menú **CorridorKey** en la barra superior.
+Antes de empezar, comprueba tres cosas:
 
-Para **actualizar** a una versión nueva del paquete, vuelve a ejecutar `instalar.bat`: reutiliza lo ya descargado y solo cambia lo necesario.
+- Tienes una GPU NVIDIA RTX serie 30 o más nueva y el driver al día (si dudas: abre una terminal y escribe `nvidia-smi`; arriba a la derecha dice la versión del driver, tiene que ser 570 o más).
+- Tienes unos **15 GB libres** en el disco `C:` (o en el disco donde esté tu carpeta `%LOCALAPPDATA%`).
+- **Nuke está cerrado** (si estaba abierto, ciérralo: el menú nuevo solo aparece al abrirlo de nuevo).
+
+### 1. Descargar el paquete
+
+1. Entra a la página del repositorio en GitHub con tu cuenta (es privado: tienes que haber aceptado la invitación que llegó a tu correo).
+2. Pulsa el botón verde **Code** y elige **Download ZIP**. Se baja un archivo `CorridorKey-Nuke-main.zip` (pesa poco: el paquete no trae los modelos, el instalador los baja después).
+3. Haz clic derecho sobre el ZIP y elige **Extraer todo...**. Déjalo en una carpeta normal, por ejemplo `C:\Herramientas\CorridorKey-Nuke`. **No lo ejecutes desde dentro del ZIP**: el instalador necesita ver la carpeta `nuke` que viene junto a él.
+
+Si usas git, es equivalente: `git clone <dirección del repositorio>`.
+
+### 2. Instalar
+
+1. Abre la carpeta que extrajiste y haz **doble clic en `instalar.bat`**.
+2. Si Windows muestra una ventana azul ("Windows protegió su PC"), pulsa **Más información** y luego **Ejecutar de todos modos**. Sale porque el archivo viene de internet y no está firmado; es el `.bat` de esta carpeta y su contenido se puede leer con el Bloc de notas.
+3. Se abre una ventana negra que va mostrando pasos con `==>`. **No la cierres.** Hace esto, en orden:
+   - revisa la GPU, el driver y el espacio libre (si algo no cumple, se detiene y lo dice);
+   - baja `uv` y crea un Python 3.12 propio (no toca tu Python ni el de Nuke);
+   - baja CorridorKey 2.0 desde su GitHub oficial;
+   - instala PyTorch con CUDA (unos 3 GB, es lo que más tarda);
+   - instala las dependencias y baja los modelos (unos 3,5 GB);
+   - comprueba que PyTorch ve tu GPU y copia el menú a tu carpeta `.nuke`.
+4. Al final dice **"Listo. Reinicia Nuke"** en verde y la ventana queda esperando una tecla. La primera vez tarda entre 10 y 30 minutos según tu conexión; es normal que pasen varios minutos sin que se mueva el texto mientras baja PyTorch.
+5. Si dice **ERROR** en rojo, no hace falta repetir nada a mano: lee el mensaje (suele ser conexión, antivirus, driver antiguo o poco espacio), arréglalo y vuelve a ejecutar `instalar.bat`, que continúa con lo ya descargado. Si no logras resolverlo, envía el archivo `%LOCALAPPDATA%\CorridorKey\install.log` a quien mantiene el paquete.
+
+### 3. Comprobar que funciona
+
+1. Abre Nuke (15.1 o 17). En la barra de menús superior aparece **CorridorKey**.
+2. Elige **CorridorKey > Diagnóstico**: tiene que mostrar la instalación y el nombre de tu GPU.
+3. Crea el nodo con **CorridorKey > Crear nodo CorridorKey** y sigue con "Usar", más abajo.
+
+Si el menú no aparece, mira la consola de Nuke (o la terminal desde donde lo abriste): el bloque que agregamos a `menu.py` imprime ahí `CorridorKey: no se pudo cargar: ...` con la causa.
+
+### Actualizar
+
+Cuando haya una versión nueva: descarga el ZIP otra vez, extráelo (puedes reemplazar la carpeta anterior) y vuelve a ejecutar `instalar.bat`. Reutiliza lo ya descargado (Python, PyTorch, modelos) y solo cambia lo necesario.
+
+### Dónde queda todo
 
 El instalador deja todo en `%LOCALAPPDATA%\CorridorKey` (Python propio, no toca el tuyo) y agrega un bloque a `~\.nuke\menu.py`
-(con copia de seguridad `menu.py.bak_corridorkey`). Si tu estudio usa otra carpeta de Nuke:
+(con copia de seguridad `menu.py.bak_corridorkey`). La carpeta que descargaste ya no hace falta después de instalar: puedes borrarla.
+Si tu estudio usa otra carpeta de Nuke, abre una terminal en la carpeta del paquete y ejecuta:
 `instalar.bat -NukeDir D:\ruta\.nuke`.
 
 ## Usar
