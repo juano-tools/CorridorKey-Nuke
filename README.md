@@ -35,6 +35,8 @@ Los nodos que ya tengas en tus scripts se quedan con el panel viejo. Bórralos y
 
 Desde la 0.7.0, la casilla "plate original en el interior" viene marcada.
 
+Desde la 0.7.1, el nodo trae "suavidad" en "plate original en el interior" y las layers `ck_fg` y `ck_fg_raw`. Un nodo hecho con la 0.7.0 sigue funcionando, pero sin eso: créalo de nuevo para tenerlas.
+
 ## Cómo se usa
 
 1. Tab > CorridorKey, o en el menú CorridorKey > Crear nodo CorridorKey. Si tenías un nodo seleccionado, se conecta solo.

@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Version = '0.7.0'
+$Version = '0.7.1'
 $AppCommit = '485f5e9ab759ead6138cc990776184b59d6ea971'      # CorridorKey 2.0, 2026-10-15
 $Utils3dCommit = '83bfa5bda008803f6521ce9547f94023b8afeddd'  # el que fija su requirements.txt
 $PluginSrc = Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'nuke\corridorkey_nuke'
