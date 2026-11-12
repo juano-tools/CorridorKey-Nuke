@@ -52,6 +52,12 @@ Si el menú no aparece, mira la consola de Nuke (o la terminal desde donde lo ab
 ### Actualizar
 
 Cuando haya una versión nueva: descarga el ZIP otra vez, extráelo (puedes reemplazar la carpeta anterior) y vuelve a ejecutar `instalar.bat`. Reutiliza lo ya descargado (Python, PyTorch, modelos) y solo cambia lo necesario.
+Cierra Nuke antes de instalar, o reinícialo después.
+
+Ten en cuenta al actualizar:
+
+- Los nodos CorridorKey que ya tengas en tus scripts conservan el panel viejo y no tendrán los controles nuevos. Bórralos y crea uno nuevo (Tab > CorridorKey). Los EXR que ya procesaste no se pierden: si usas el mismo nombre y versión de salida, el nodo nuevo los sobrescribe al procesar.
+- Desde la 0.7.0, el panel viene con **plate original en el interior** marcada.
 
 ### Dónde queda todo
 
