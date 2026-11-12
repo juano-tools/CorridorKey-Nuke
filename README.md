@@ -117,7 +117,7 @@ Los EXR van a la carpeta de salida del nodo:
 
 Se guardan el alpha y el fg sin despill, con el frame real del shot y a la resolución con que procesaste. El cutout no se guarda: lo arma el nodo en vivo.
 
-- Carpeta: el nodo propone la `2_prerenders` que está junto al `1_projects` del script. Con el script sin guardar, usa la `Comp\2_prerenders` del shot del plate, si existe. Si no encuentra ninguna, usa `%LOCALAPPDATA%\CorridorKey\salida`.
+- Carpeta: el nodo propone una automática y la muestra escrita en el campo; puedes cambiarla por cualquier otra. Si no encuentra una carpeta de prerenders del shot, usa `%LOCALAPPDATA%\CorridorKey\salida`.
 - Nombre: el del plate más `_ck`.
 - Carpeta y nombre se pueden cambiar a mano. Si borras el campo, vuelve el automático.
 - Versión: procesar de nuevo reemplaza esa versión. Si quieres conservarla, sube el número antes.
