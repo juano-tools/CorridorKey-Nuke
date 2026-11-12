@@ -12,7 +12,7 @@ Estado al 2026-11-11. Versión en el repo: **0.7.0** (sin commit; la 0.6 nunca s
 | 0.4 | El modelo entrega solo alpha y fg; el cutout y el despill se calculan en vivo. Vista straight. Nombre prellenado. |
 | 0.5 | Chequeo de disco, pantalla verde o azul, ventana temporal. Rango que sigue al clip. |
 | 0.6 | Panel en secciones, casilla "Usar hint", hint solo en el primer frame, calidad interna del hint, hint sin arrastre, memoria baja manual, "Original en zonas sólidas". |
-| 0.7 | Panel con el diseño de SHARP Splat y flujo en 3 pasos; la carpeta de salida muestra la ruta automática (también con el script sin guardar). "Plate original en el interior" marcada por defecto. El aviso de GPU ocupada lista los procesos. Poca VRAM: ventana según la tabla de CorridorKey para cada tarjeta, ventanas 2 y 4, reintento automático si falta memoria, memoria Auto / Baja / Mínima. |
+| 0.7 | Panel con el diseño de SHARP Splat y flujo en 3 pasos; la carpeta de salida muestra la ruta automática (también con el script sin guardar). "Plate original en el interior" marcada por defecto y con suavidad del borde. Layers `ck_fg` y `ck_fg_raw` para sacar con un Shuffle. El aviso de GPU ocupada lista los procesos. Poca VRAM: ventana según la tabla de CorridorKey para cada tarjeta, ventanas 2 y 4, reintento automático si falta memoria, memoria Auto / Baja / Mínima. |
 
 ## Para cerrar la 0.7.0
 
@@ -23,6 +23,18 @@ Estado al 2026-11-11. Versión en el repo: **0.7.0** (sin commit; la 0.6 nunca s
 - [x] Probado en GUI (2026-11-11, "todo funciona"): plate original en el interior, carpeta de salida con el script sin guardar, "Solo el primer frame", memoria y ventanas 2 y 4.
 - [x] Créditos y licencia en el README; `LICENSE` de CorridorKey 2.0 en el repo.
 - [x] Commit, push y ZIP 0.7.0.
+
+## 0.8: cola de procesado
+
+Pedida el 2026-11-12. Varios shots en un script, cada uno con su nodo CorridorKey, procesados en una sola tanda y sin bloquear Nuke.
+
+- [ ] Medir cuánto tarda `load_model` (no está en los logs): decide cuánto pesa cargar el modelo una sola vez frente a no bloquear Nuke.
+- [ ] Menú **CorridorKey > Procesar seleccionados**: Nuke convierte el plate y el hint de cada nodo (reutiliza la conversión si nada cambió) y lanza un solo proceso en segundo plano.
+- [ ] Script de cola nuestro, sin tocar CorridorKey: importa su `infer.py`, carga el modelo una vez y llama a `run_inference` por shot con los mismos argumentos que hoy (`core.build_argv`). Un log y un estado por shot, y reintento por memoria por shot.
+- [ ] En Nuke, un temporizador revisa el estado: cada nodo muestra en cola, procesando o listo, y al terminar un shot se publican sus EXR y se conecta el resultado como hoy.
+- [ ] Si se cierra Nuke a mitad, el proceso sigue; al reabrir el script, el nodo recoge lo que terminó.
+- [ ] Probar en Nuke 15.1 (el temporizador usa Qt).
+- [ ] Pantalla azul: sin buenos resultados (2026-11-12, 4K nativo con hint); el repo de CorridorKey solo habla de verde. Probar el truco de intercambiar verde y azul antes del nodo y deshacerlo después (despill en Verde). Si funciona, que el nodo lo haga por dentro con pantalla Azul; si no, avisar en el README que azul no se recomienda.
 
 ## Poca VRAM, fase 2 (medir en GPU antes de decidir)
 
@@ -46,11 +58,10 @@ Estado al 2026-11-11. Versión en el repo: **0.7.0** (sin commit; la 0.6 nunca s
 
 ## Ideas aparcadas
 
-- Procesado en segundo plano o cola (hoy Nuke queda bloqueado con la barra de progreso).
 - Hint con un frame de referencia arbitrario (el CLI solo documenta el primer frame).
 - Color de despill automático.
 - EXR en 32 bit float (`--exr_dtype`) y `--stage2_batch` para GPUs grandes.
-- Umbral y erosión ajustables en "plate original en el interior".
+- Umbral ajustable en "plate original en el interior" (la suavidad ya está desde la 0.7).
 
 ## Última prioridad
 

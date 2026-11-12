@@ -43,6 +43,11 @@ Desde la 0.7.0, la casilla "plate original en el interior" viene marcada.
 
 El nodo saca el cutout premultiplicado al tamaño del plate. Con "ver" cambias entre cutout, alpha, fg, fg + alpha y el plate, sin volver a procesar.
 
+Si necesitas otra pasada sin duplicar el nodo, sácala con un Shuffle. La salida lleva dos layers, las dos sin premultiplicar y con el alpha:
+
+- `ck_fg`: el fg con plate original y despill.
+- `ck_fg_raw`: el fg crudo del modelo, sin plate original ni despill.
+
 El panel sigue el orden en que se trabaja:
 
 - 1 · entrada: resolución, rango y hint.
@@ -83,13 +88,13 @@ Si prefieres tu propio despill (DespillMadness u otro), pon "ver" en fg + alpha 
 
 ### Plate original en el interior
 
-El fg de CorridorKey es el color del sujeto recalculado por el modelo. En los bordes eso es justo lo que quieres, porque saca la pantalla del pelo, del motion blur y de las transparencias. En el interior del sujeto no hay nada que separar, y si procesaste en HD el fg viene reescalado: más blando y con menos grano que el plate.
+Con esta casilla marcada, el nodo usa el plate original en las zonas sólidas del sujeto y el fg de CorridorKey solo en los bordes.
 
-Con la casilla marcada, donde el alpha es sólido (de 0,95 a 1) el nodo usa el plate original, y deja el fg del modelo solo en los bordes y las zonas translúcidas. El despill va después, sobre todo el sujeto.
+El fg del modelo es el que limpia los bordes: saca el verde o el azul del croma que se mezcla en el pelo, el motion blur y las transparencias. En el interior no hay nada que limpiar, y si procesaste en HD el fg viene reescalado, más blando y con menos grano. Con la casilla marcada, el interior conserva el detalle y el grano del plate.
 
-Revisa la transición entre el interior y el borde. Si se nota una línea, desmárcala; por ahora el umbral es fijo.
+Si se nota una línea entre el interior y el borde, sube la "suavidad" (en píxeles; viene en 4) o desmarca la casilla.
 
-Solo cambia lo que ves en Nuke. Los EXR guardados son siempre el alpha y el fg del modelo.
+Es en vivo y no cambia los EXR guardados.
 
 ### Memoria de GPU
 

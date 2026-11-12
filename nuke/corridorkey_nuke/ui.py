@@ -91,19 +91,28 @@ TIPS = {
         "Qué hace: donde el alpha es sólido (de 0.95 a 1) pone los píxeles del plate; en los bordes y las zonas "
         "translúcidas deja el fg del modelo. El despill se aplica después, sobre todo el sujeto.\n\n"
         "Cuándo usarla: al procesar en HD o 720p un plate de más resolución, casi siempre.\n"
-        "Qué revisar: el límite entre el interior y el borde. Si ves una línea ahí, desmárcala.\n\n"
+        "Qué revisar: el límite entre el interior y el borde. Si ves una línea ahí, sube la suavidad o desmárcala.\n\n"
         "Es en vivo: no vuelve a procesar. Cambia las vistas cutout, fg y fg + alpha; los EXR guardados no cambian "
         "(son siempre el alpha y el fg crudos del modelo)."),
+    "ko_soft": (
+        "Suavidad, en píxeles del plate, de la transición entre el plate original del interior y el fg del modelo en el "
+        "borde. La mezcla queda mitad y mitad a esa distancia hacia dentro del sujeto.\n"
+        "La zona del plate se encoge esa cantidad y después se desenfoca, así la transición queda dentro del sujeto "
+        "y no le quita borde al modelo.\n"
+        "0 = corte duro. Súbela si ves una línea entre el interior y el borde. Es en vivo."),
     "hint_info": "Qué hint recibirá la próxima corrida.",
     "despill": ("Fuerza del despill: 0 = nada, 1 = completo (CorridorKey usa 0.5 por defecto). Se ve al instante, "
                 "sin Procesar."),
     "output": (
         "Qué muestra el nodo (cambiarlo no vuelve a procesar):\n"
         "cutout = el fg con el despill de abajo, premultiplicado por el alpha: listo para componer.\n"
-        "alpha = el matte en gris.\nfg = foreground crudo (sin despill ni premultiplicar; con el clip original en las "
-        "zonas sólidas si activaste esa opción).\n"
-        "fg + alpha = straight: el fg crudo con el alpha en el canal alpha, SIN premultiplicar: para despillar con "
-        "tu propio nodo y premultiplicar después.\nclip original = el clip sin keyear."),
+        "alpha = el matte en gris.\nfg = el fg sin despill ni premultiplicar, con el plate original en el interior si "
+        "está marcada esa casilla.\n"
+        "fg + alpha = el mismo fg con el alpha en el canal alpha, sin premultiplicar: para despillar con tu propio "
+        "nodo y premultiplicar después.\nclip original = el plate tal cual.\n\n"
+        "Además, la salida lleva dos layers para sacarlas con un Shuffle sin duplicar el nodo:\n"
+        "ck_fg = el fg con plate original y despill, sin premultiplicar, con el alpha.\n"
+        "ck_fg_raw = el fg crudo del modelo, sin plate original ni despill, con el alpha."),
     "run_btn": ("Procesa el clip con CorridorKey. Si el clip y el hint no cambiaron desde la última vez, reutiliza los "
                 "archivos ya convertidos y no los reescribe."),
     "reconvert_btn": ("Reconvertir y procesar: vuelve a escribir el clip y el hint aunque parezcan iguales (por si "
@@ -355,6 +364,8 @@ def refresh_state(node):
                   ("carry_quality", carry and _window(node) != 1)):
         node[k].setEnabled(on)
     node["use_hint"].setEnabled(h is not None)
+    if node.knob("ko_soft") is not None:
+        node["ko_soft"].setEnabled(node["keep_orig"].value())
 
 
 def on_knob_changed():
@@ -369,7 +380,7 @@ def on_knob_changed():
                 _sync_range(node, src)
         if name in ("inputChange", "showPanel") and node.knob("out_dir") is not None:
             _sync_out_dir(node)  # al abrir el panel: el script pudo guardarse en otra carpeta
-        if name in ("inputChange", "use_hint", "no_carry", "temporal_window"):
+        if name in ("inputChange", "use_hint", "no_carry", "temporal_window", "keep_orig"):
             refresh_state(node)
     except ValueError:  # el nodo se está destruyendo (se cierra o se limpia el script)
         pass
@@ -493,7 +504,17 @@ def _detach(node):
                 old = old or {"first": int(r["first"].value()), "last": int(r["last"].value()), "paths": {}}
                 old["paths"][k] = r["file"].value()
                 nuke.delete(r)
+        _no_result()
     return old
+
+
+def _no_result():
+    """Sin Read de resultados los Reformat quedan sin canales y los Copy de las layers dan 'Missing input channel':
+    mientras tanto leen un negro. Dentro del `with node:` de quien la llama; los nodos anteriores a la 0.7 no lo tienen."""
+    black = nuke.toNode("no_result")
+    if black is not None:
+        for k in KINDS:
+            nuke.toNode("rf_" + k).setInput(0, black)
 
 
 def _prune_outputs(work, base):
@@ -722,6 +743,9 @@ def _add_knobs(g):
     g["despill"].setValue(0.5)
     add(nuke.Boolean_Knob("keep_orig", "plate original en el interior"), TIPS["keep_orig"]).setFlag(nuke.STARTLINE)
     g["keep_orig"].setValue(True)
+    add(nuke.Double_Knob("ko_soft", "suavidad"), TIPS["ko_soft"])
+    g["ko_soft"].setRange(0, 20)
+    g["ko_soft"].setValue(4)
     end("sec_post")
 
     section("sec_adv", "avanzado", "Lo que cambies en esta sección se aplica al volver a Procesar.", closed=True)
@@ -753,8 +777,12 @@ def create_node():
         rf_a = nuke.nodes.Reformat(name="rf_alpha", xpos=0, ypos=-220)
         rf_f = nuke.nodes.Reformat(name="rf_fg", xpos=120, ypos=-220)
         # 'plate original en el interior': donde el alpha es ~1 el fg pasa a ser el clip (antes del despill, que lo limpia igual).
-        # shortcut: umbral fijo 0.95-1.0 sin erosión; si queda un halo en el límite, erosionar la máscara.
+        # La máscara se encoge 'suavidad' px y se desenfoca con un blur del mismo tamaño: medido en 17.0, fuera del sólido
+        # queda <1 % de plate y la mezcla llega al 50 % a 'suavidad' px hacia dentro (con blur del doble se escapaba un 8-12 %).
+        # shortcut: umbral fijo 0.95-1.0; si hace falta, exponerlo como knob.
         ko = nuke.nodes.Expression(name="ko_mask", inputs=[rf_a], expr3="clamp((r-0.95)/0.05,0,1)", xpos=0, ypos=-170)
+        ko = nuke.nodes.Dilate(name="ko_erode", inputs=[ko], channels="alpha", xpos=0, ypos=-140)
+        ko = nuke.nodes.Blur(name="ko_blur", inputs=[ko], channels="alpha", xpos=0, ypos=-110)
         fgm = nuke.nodes.Keymix(name="ko_mix", inputs=[rf_f, clip, ko], channels="rgb", xpos=120, ypos=-185)  # B, A, mask
         avg = nuke.nodes.Expression(name="dsp_avg", inputs=[fgm], xpos=120, ypos=-150)
         mx = nuke.nodes.Expression(name="dsp_max", inputs=[fgm], xpos=240, ypos=-150)
@@ -765,7 +793,20 @@ def create_node():
         st = nuke.nodes.Copy(name="st", inputs=[fgm, rf_a], from0="rgba.red", to0="rgba.alpha", xpos=300, ypos=-30)
         sw = nuke.nodes.Switch(name="sw", inputs=[pm, rf_a, fgm, st, clip], xpos=120, ypos=100)  # = OUTPUT_ITEMS
         sw["which"].setValue(4)  # hasta la primera corrida el nodo deja pasar el clip
-        nuke.nodes.Output(inputs=[sw], xpos=120, ypos=160)
+        # Layers para sacar con un Shuffle afuera sin duplicar el nodo; rgba sigue siendo lo que muestra 'ver'.
+        # ck_fg = fg con plate original y despill, sin premultiplicar; ck_fg_raw = fg crudo del modelo. Ambas con el alpha.
+        raw = nuke.nodes.Copy(name="st_raw", inputs=[rf_f, rf_a], from0="rgba.red", to0="rgba.alpha", xpos=420, ypos=-30)
+        out = sw
+        for layer, from_node in (("ck_fg", cp), ("ck_fg_raw", raw)):
+            if layer not in nuke.layers():
+                nuke.Layer(layer, ["%s.%s" % (layer, c) for c in ("red", "green", "blue", "alpha")])
+            out = nuke.nodes.Copy(name="ly_" + layer, inputs=[out, from_node], xpos=120, ypos=out["ypos"].value() + 40,
+                                  **{"from%d" % i: "rgba." + c for i, c in enumerate(("red", "green", "blue", "alpha"))})
+            for i, c in enumerate(("red", "green", "blue", "alpha")):
+                out["to%d" % i].setValue("%s.%s" % (layer, c))
+        nuke.nodes.Output(inputs=[out], xpos=120, ypos=out["ypos"].value() + 60)
+        nuke.nodes.Constant(name="no_result", channels="rgba", color=0, xpos=60, ypos=-300)
+        _no_result()
     _add_knobs(g)
     with g:  # las expresiones leen knobs del Group: se ponen cuando ya existen
         for name, method in (("dsp_avg", "avg"), ("dsp_max", "max")):
@@ -778,6 +819,8 @@ def create_node():
                 e["expr%d" % i].setValue(expr)
         nuke.toNode("dsp_sw")["which"].setExpression("parent.despill_mode")
         nuke.toNode("ko_mix")["disable"].setExpression("!parent.keep_orig")
+        nuke.toNode("ko_erode")["size"].setExpression("-parent.ko_soft")
+        nuke.toNode("ko_blur")["size"].setExpression("parent.ko_soft")
     g["tile_color"].setValue(0x3B7A57FF)
     g["label"].setValue("[value resolution]")
     if src is not None:

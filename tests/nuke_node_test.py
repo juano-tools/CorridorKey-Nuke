@@ -105,6 +105,11 @@ for n in nuke.allNodes():
 src["selected"].setValue(True)
 g = ui.create_node()
 assert g.input(0).name() == src.name(), "create_node no conectó el clip"
+# sin procesar no hay Read de resultados: nada adentro puede dar "Missing input channel"
+g.sample("ck_fg.red", 5, 5, frame=1004)
+with g:
+    bad = [n.name() for n in nuke.allNodes() if n.hasError()]
+assert not bad and not g.hasError(), "el nodo recién creado tiene error en %s" % bad
 g2 = ui.create_node()  # un segundo nodo no puede llamarse igual: compartirían la carpeta de temporales
 assert g2.name() != g.name(), "dos nodos con el mismo nombre: %s" % g.name()
 print("nombres:", g.name(), g2.name())
@@ -414,10 +419,32 @@ if FAKE:  # el alpha falso (0.1 * nº de corrida) nunca es sólido: se fuerza la
         nuke.toNode("ko_mask")["expr3"].setValue("1")
     g["keep_orig"].setValue(True)
     expect_rgb("fg con 'original en sólidas'", rgb(g), clip_px, tol=0.03)
+    # la suavidad (encoger + blur) no puede comerse el interior desde el borde del cuadro
+    assert g["ko_soft"].value() == 4, g["ko_soft"].value()
+    corner = tuple(g.sample(c, 0.5, 0.5, frame=1004) for c in ("red", "green", "blue"))
+    expect_rgb("esquina del cuadro con suavidad 4", corner, tuple(src.sample(c, 0.5, 0.5, frame=1004) for c in ("red", "green", "blue")), tol=0.03)
+    # sólido en la mitad izquierda: fuera del sólido sigue el fg del modelo; justo dentro, mezcla; bien dentro, plate
+    with g:
+        nuke.toNode("ko_mask")["expr3"].setValue("x < width/2")
+    half = g.width() / 2
+    at = lambda n, x: tuple(n.sample(c, x, 5, frame=1004) for c in ("red", "green", "blue"))
+    expect_rgb("suavidad: fuera del sólido", at(g, half + 0.5), FG_COLOR)
+    expect_rgb("suavidad: dentro del sólido", at(g, half - 20.5), at(src, half - 20.5), tol=0.03)
+    mid = at(g, half - 3.5)
+    assert abs(mid[1] - FG_COLOR[1]) > 0.05 and abs(mid[1] - at(src, half - 3.5)[1]) > 0.05, (mid, FG_COLOR)
+    print("   ok suavidad: transición dentro del sólido", tuple(round(v, 3) for v in mid))
     g["keep_orig"].setValue(False)
     with g:
         nuke.toNode("ko_mask")["expr3"].setValue("clamp((r-0.95)/0.05,0,1)")
     g["output"].setValue(0)
+    # layers para Shuffle: ck_fg premultiplicado = cutout; ck_fg_raw = fg crudo; ambas llevan el alpha del modelo
+    lay = lambda name: tuple(g.sample("%s.%s" % (name, c), 5, 5, frame=1004) for c in ("red", "green", "blue", "alpha"))
+    fg_l, raw_l = lay("ck_fg"), lay("ck_fg_raw")
+    expect_rgb("layer ck_fg_raw", raw_l[:3], FG_COLOR)
+    # el alpha falso sube 0.1 por corrida y aquí ya pasa de 1: medido en 17.0, Premult no multiplica por más de 1
+    expect_rgb("layer ck_fg premult = cutout", tuple(v * min(fg_l[3], 1) for v in fg_l[:3]), rgb(g))
+    assert abs(fg_l[3] - raw_l[3]) < 1e-4 and abs(fg_l[3] - g.sample("alpha", 5, 5, frame=1004)) < 1e-4, (fg_l, raw_l)
+    print("   ok layers: alpha", round(fg_l[3], 3))
 
 # 6) guardar, reabrir y comprobar que el nodo y sus resultados sobreviven; borrar temporales
 step("6. guardar y reabrir")
