@@ -15,7 +15,7 @@ Para ver tu versión de driver, abre una terminal y escribe `nvidia-smi`. Aparec
 
 ## Instalar
 
-1. Extrae el ZIP en cualquier carpeta, por ejemplo `C:\Users\<tu usuario>\.nuke\CorridorKey-Nuke`. No lo ejecutes desde dentro del ZIP, porque no encuentra sus archivos. Si tienes acceso al repo en GitHub, lo bajas con Code > Download ZIP.
+1. Extrae el ZIP en cualquier carpeta, por ejemplo `C:\Users\<tu usuario>\.nuke\CorridorKey-Nuke`. No lo ejecutes desde dentro del ZIP, porque no encuentra sus archivos. El ZIP de la última versión está en [Releases](https://github.com/juano-tools/CorridorKey-Nuke/releases/latest), en Assets.
 2. Cierra Nuke.
 3. Doble clic en `instalar.bat`. Si Windows avisa que protegió tu PC, elige Más información > Ejecutar de todos modos. Sale porque el archivo no está firmado.
 4. Espera. La primera vez tarda entre 10 y 30 minutos, casi todo en descargar PyTorch y los modelos. A ratos parece que no avanza; no cierres la ventana.
