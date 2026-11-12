@@ -38,10 +38,10 @@ RUNS = [0]
 FG_COLOR = (0.2, 0.6, 0.4)  # el fg falso: verde dominante y r != b, para distinguir los despills
 
 
-def fake_infer(work, n, outputs, hint, quality, low_mem, window, out_name):
+def fake_infer(work, n, outputs, hint, quality, low_mem, window, out_name, **extra):
     """alpha = gris de valor 0.1 * nº de corrida; fg = FG_COLOR."""
     RUNS[0] += 1
-    CALL.update(low_mem=low_mem, window=window, outputs=list(outputs))
+    CALL.update(low_mem=low_mem, window=window, outputs=list(outputs), hint=hint, **extra)
     in_dir, out_dir = os.path.join(work, "in"), os.path.join(work, out_name)
     for kind in outputs:
         c = nuke.nodes.Constant()
@@ -255,7 +255,7 @@ if FAKE:
         assert CALL["window"] == want and not ASKS, (item, CALL, ASKS)
         assert CALL["low_mem"] == (small and want > 1), "memoria baja mal decidida: %s" % CALL  # HD < 3 Mpx
         print("   ok ventana %-14s -> window=%s low_mem=%s | %s" % (item, CALL["window"], CALL["low_mem"],
-                                                                   g["status"].value().split("\n")[2]))
+                                                                   g["status"].value().split("<br>")[2]))
     if small:  # 48 frames en HD supera lo recomendado para 12-16 GB: pregunta; si dices que no, no corre
         g["temporal_window"].setValue("48")
         ANSWER[0], runs1 = False, RUNS[0]
@@ -356,6 +356,68 @@ assert chk.width() == 1280, "el plate convertido mide %d de ancho, no 1280" % ch
 nuke.delete(chk)
 assert (g.width(), g.height()) == (src.width(), src.height()), "la salida no volvió al tamaño del clip"
 g["resolution"].setValue(ui.RES_ITEMS[0])  # y volver a HD (los pasos siguientes lo esperan)
+
+# 5c) opciones del hint (usar / solo primer frame / arrastre), knobs en gris y 'original en zonas sólidas'
+t = step("5c. opciones del hint y original en zonas sólidas")
+g.setInput(1, hint)
+ui.refresh_state(g)
+assert g["hint_info"].value() == hint.name() and g["hint_quality"].enabled() and g["carry_quality"].enabled()
+g["use_hint"].setValue(False)
+ui.refresh_state(g)
+assert not g["hint_quality"].enabled() and "desmarcado" in g["hint_info"].value(), "'Usar hint' desmarcado no apagó el hint"
+ui.run(g)
+assert not os.path.isdir(os.path.join(work, "hint")), "con 'Usar hint' desmarcado igual convirtió el hint"
+if FAKE:
+    assert CALL["hint"] is False, CALL
+g["use_hint"].setValue(True)
+g["hint_frames"].setValue(ui.HINT_FRAMES[1])
+g["no_carry"].setValue(True)
+g["gpu_memory"].setValue(ui.MEMORY_ITEMS[1])
+ui.refresh_state(g)
+assert not g["carry_quality"].enabled(), "'Hint sin arrastre' no apagó la calidad interna"
+ui.run(g)
+pngs = [f for f in os.listdir(os.path.join(work, "hint")) if f.endswith(".png")]
+assert pngs == ["hint.%d.png" % FIRST], "con 'Solo el primer frame' debía convertir un único frame: %s" % pngs
+if FAKE:
+    assert CALL["hint_first"] is True and CALL["no_carry"] is True and CALL["low_mem"] is True, CALL
+g["temporal_window"].setValue(ui.WINDOW_ITEMS[1])  # frame a frame: no hay arrastre entre ventanas
+g["no_carry"].setValue(False)
+ui.refresh_state(g)
+assert not g["carry_quality"].enabled(), "con ventana frame a frame el arrastre no aplica"
+g["temporal_window"].setValue(ui.WINDOW_ITEMS[0])
+g["hint_frames"].setValue(ui.HINT_FRAMES[0])
+g["gpu_memory"].setValue(ui.MEMORY_ITEMS[0])
+if FAKE:  # sin memoria: reintenta con la ventana siguiente más chica y lo dice en el estado
+    real_fake, fails = ui.run_infer, [2]
+
+    def oom_infer(*a, **k):
+        if fails[0]:
+            fails[0] -= 1
+            raise ui.OutOfMemory("CUDA out of memory (simulado)")
+        return real_fake(*a, **k)
+    ui.run_infer = oom_infer
+    g["temporal_window"].setValue("16")
+    ANSWER[0] = True
+    ui.run(g)
+    ui.run_infer = real_fake
+    assert CALL["window"] == 4 and CALL["low_mem"], "tras dos fallos de memoria con 16 debía terminar en 4: %s" % CALL
+    assert "bajó de 16 por memoria" in g["status"].value(), g["status"].value()
+    g["temporal_window"].setValue(ui.WINDOW_ITEMS[0])
+    print("   ok reintento por memoria:", g["status"].value().split("<br>")[2])
+if FAKE:  # el alpha falso (0.1 * nº de corrida) nunca es sólido: se fuerza la máscara a 1 para ver el clip en el interior
+    g["output"].setValue(2)  # fg
+    clip_px = tuple(src.sample(c, 5, 5, frame=1004) for c in ("red", "green", "blue"))
+    assert g["keep_orig"].value() is True, "la casilla del plate original debía venir marcada por defecto"
+    g["keep_orig"].setValue(False)
+    expect_rgb("fg sin 'original en sólidas'", rgb(g), FG_COLOR)
+    with g:
+        nuke.toNode("ko_mask")["expr3"].setValue("1")
+    g["keep_orig"].setValue(True)
+    expect_rgb("fg con 'original en sólidas'", rgb(g), clip_px, tol=0.03)
+    g["keep_orig"].setValue(False)
+    with g:
+        nuke.toNode("ko_mask")["expr3"].setValue("clamp((r-0.95)/0.05,0,1)")
+    g["output"].setValue(0)
 
 # 6) guardar, reabrir y comprobar que el nodo y sus resultados sobreviven; borrar temporales
 step("6. guardar y reabrir")

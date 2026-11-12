@@ -28,6 +28,19 @@ class Argv(unittest.TestCase):
         self.assertEqual(a[a.index("--hann_chunk") + 1], "8")
         self.assertIn("--low_vram", a)
 
+    def test_hint_primer_frame_y_arrastre(self):
+        a = core.build_argv(CFG, "in", "out", 24, ["alpha"], "tmp", hint_dir="h", hint_first=True)
+        self.assertEqual(a[a.index("--hint_first_frame") + 1], "h")
+        self.assertNotIn("--hint_video", a)
+        self.assertNotIn("--carry_hint_quality", a)  # sin valor explícito CorridorKey usa su 0.95
+        a = core.build_argv(CFG, "in", "out", 24, ["alpha"], "tmp", hint_dir="h", carry_quality=0.8)
+        self.assertEqual(a[a.index("--carry_hint_quality") + 1], "0.8")
+        a = core.build_argv(CFG, "in", "out", 24, ["alpha"], "tmp", hint_dir="h", carry_quality=0.8, no_carry=True)
+        self.assertIn("--no_carry_hint", a)
+        self.assertNotIn("--carry_hint_quality", a)
+        a = core.build_argv(CFG, "in", "out", 24, ["alpha"], "tmp", no_carry=True, carry_quality=0.8)  # sin hint: nada
+        self.assertNotIn("--no_carry_hint", a)
+
     def test_ventana(self):
         def hann(a):
             return a[a.index("--hann_chunk") + 1], a[a.index("--hann_stride") + 1]
@@ -43,6 +56,24 @@ class Argv(unittest.TestCase):
         self.assertEqual(core.window_limit(1280, 720), 80)
         self.assertEqual(core.window_limit(1920, 1080), 24)
         self.assertEqual(core.window_limit(3840, 2160), 8)
+
+    def test_window_limit_por_gpu(self):
+        for mib, res, want in ((12282, (3840, 2160), 8), (6144, (3840, 2160), 2), (8192, (3840, 2160), 4),
+                               (6144, (2560, 1440), 4), (4096, (1920, 1080), 2), (3072, (1280, 720), 4),
+                               (24564, (1920, 1080), 48), (81920, (3840, 2160), 48)):
+            self.assertEqual(core.window_limit(res[0], res[1], mib), want, (mib, res))
+
+    def test_reintento_por_memoria(self):
+        self.assertEqual([core.smaller_window(w) for w in (80, 24, 16, 8, 3, 2, 1)], [48, 16, 8, 4, 2, 1, None])
+        self.assertTrue(core.is_oom("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.11 GiB"))
+        self.assertFalse(core.is_oom("window 3/8"))
+        self.assertEqual(core.auto_window("Auto VRAM: 7.8 GB -> hann_chunk=24, hann_stride=12, low_vram=True"), 24)
+        self.assertIsNone(core.auto_window("nada"))
+
+    def test_memoria_minima(self):
+        a = core.build_argv(CFG, "in", "out", 24, ["alpha"], "tmp", low_mem="min", window=2)
+        self.assertEqual(a[a.index("--low_vram_foundation_chunk") + 1], "1")
+        self.assertEqual(a[a.index("--hann_chunk") + 1], "2")
 
     def test_carpeta_salida(self):
         self.assertEqual(core.output_dir("out", os.path.join("run", "in"), "alpha"), os.path.join("out", "in_alpha_exr"))
@@ -102,6 +133,53 @@ class Nombres(unittest.TestCase):
                                ("x/shot_plate_1001.exr", "shot_plate"),
                                ("x/shot_plate_v001.exr", "shot_plate_v001")):  # sin número de frame: no tocar la versión
             self.assertEqual(core.clip_base(ruta), esperado)
+
+    def test_prerenders_from_clip(self):
+        with tempfile.TemporaryDirectory() as t:
+            shot = os.path.join(t, "SHOT_0100")
+            for d in ("_input/plate_v001", "comp/2_prerenders", "Roto/2_prerenders/matte_v01", "suelto"):
+                os.makedirs(os.path.join(shot, d))
+            f = lambda *p: os.path.join(shot, *p)
+            self.assertEqual(core.prerenders_from_clip(f("_input", "plate_v001", "p.%04d.exr")), f("comp", "2_prerenders"))
+            self.assertEqual(core.prerenders_from_clip(f("Roto", "2_prerenders", "matte_v01", "m.%04d.exr")),
+                             f("Roto", "2_prerenders"))
+            fuera = os.path.join(t, "descargas")
+            os.makedirs(fuera)
+            self.assertIsNone(core.prerenders_from_clip(os.path.join(fuera, "clip.mov")))
+
+    def test_process_label(self):
+        self.assertEqual(core.process_label("python.exe", r"C:\x\envs\sharp-nodes\python.exe persistent_worker.py"),
+                         "python")  # sin 'comfy' en la línea no se adivina
+        self.assertEqual(core.process_label("python.exe", r"C:\comfy-env\envs\sharp-nodes\python.exe w.py"),
+                         "ComfyUI (modelo de SHARP)")
+        self.assertEqual(core.process_label("python.exe", r"python.exe -s ComfyUI\main.py --port 8000"), "ComfyUI (python)")
+        self.assertEqual(core.process_label("Nuke17.1.exe", ""), "Nuke17.1")
+
+    def test_frame_path(self):
+        for patron in ("x/p.%04d.exr", "x/p.####.exr"):
+            self.assertEqual(core.frame_path(patron, 1001), "x/p.1001.exr")
+        self.assertEqual(core.frame_path("x/still.exr", 1001), "x/still.exr")
+
+    def test_run_key(self):
+        a, b = core.run_key("X:/s/comp/1_projects/SHOT_comp_v012.nk"), core.run_key(r"X:\s\comp\1_projects\SHOT_comp_v013.nk")
+        self.assertEqual(a, b)
+        self.assertTrue(a.startswith("SHOT_comp_"))
+        self.assertNotEqual(a, core.run_key("X:/otro/1_projects/SHOT_comp_v012.nk"))
+
+    def test_purge_old_runs(self):
+        with tempfile.TemporaryDirectory() as runs:
+            keep, viejo, nuevo = (os.path.join(runs, d) for d in ("keep", "viejo", "nuevo"))
+            for d in (keep, viejo, nuevo):
+                os.makedirs(os.path.join(d, "nodo"))
+            hace_un_mes = time.time() - 30 * 86400
+            os.utime(viejo, (hace_un_mes, hace_un_mes))
+            os.utime(keep, (hace_un_mes, hace_un_mes))
+            core.purge_old_runs(keep)
+            self.assertEqual(sorted(os.listdir(runs)), ["keep", "nuevo"])
+
+    def test_alive(self):
+        self.assertTrue(core.alive(os.getpid()))
+        self.assertFalse(core.alive(4194300))  # PID que Windows no asigna (múltiplo de 4 fuera de rango habitual)
 
     def test_prerenders_dir(self):
         p = core.prerenders_dir(r"X:\SHOW\101\SHOW_101_0500\Comp\1_projects\sub\script.nk")

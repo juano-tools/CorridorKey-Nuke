@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """CorridorKey para Nuke. `register()` agrega los menús; se llama desde menu.py (lo escribe instalar.bat)."""
-__version__ = "0.5.1"
+__version__ = "0.7.0"
 
 
 def register():

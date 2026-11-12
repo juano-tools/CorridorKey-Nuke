@@ -64,8 +64,8 @@ Si tu estudio usa otra carpeta de Nuke, abre una terminal en la carpeta del paqu
 
 1. Crea el nodo: **CorridorKey > Crear nodo CorridorKey**, o con Tab escribiendo `CorridorKey`. Si tenías un nodo seleccionado, queda conectado a la entrada **clip**.
 2. Conecta el **clip** (el plate de croma) a la entrada `clip` y, si tienes un matte del sujeto, conéctalo a la entrada `hint` (opcional; se usa su alpha).
-3. En las propiedades del nodo elige la resolución y pulsa **Procesar**. Hay barra de progreso y botón Cancelar. **Primer y Último frame** toman el rango del clip conectado; si los cambias a mano se respetan, y el botón **Rango del clip** los vuelve a tomar del clip. Lo que está bajo **Post proceso** (pantalla, despill, fuerza, ver) es en vivo y no vuelve a procesar.
-4. El nodo entrega el **cutout** (RGBA premultiplicado) a la resolución del clip. El desplegable **Ver** cambia entre cutout, alpha, fg, fg + alpha (straight) y el clip original sin volver a procesar.
+3. En las propiedades del nodo elige la resolución y pulsa **Procesar**. Hay barra de progreso y botón Cancelar. El **rango** toma el del clip conectado; si lo cambias a mano se respeta, y el botón **rango del clip** lo vuelve a tomar del clip. El panel se lee de arriba abajo en el orden en que se trabaja: **1 · entrada** (resolución, rango y hint), **2 · salida** (carpeta, nombre y versión), el botón **Procesar** con el **estado** debajo, y **3 · ajustar** (ver, pantalla, despill, fuerza, plate original en el interior: es en vivo y no vuelve a procesar). Al final, cerradas, **avanzado** (ventana temporal y memoria) y **mantenimiento** (reconvertir, borrar temporales). Cada título y cada control tiene su ayuda al dejar el mouse encima. Los controles que no aplican (por ejemplo la calidad del hint sin hint conectado) quedan en gris.
+4. El nodo entrega el **cutout** (RGBA premultiplicado) a la resolución del clip. El desplegable **Ver** cambia entre cutout, alpha, fg, fg + alpha y el clip original sin volver a procesar.
 5. Los EXR del resultado (alpha y fg) quedan en la **carpeta de salida** (ver abajo), listos para subir con el resto de tus prerenders.
 
 ### Despill en vivo y salida straight
@@ -73,23 +73,42 @@ Si tu estudio usa otra carpeta de Nuke, abre una terminal en la carpeta del paqu
 El modelo entrega el **alpha** y el **fg** (el color del sujeto sin la mezcla con la pantalla en los bordes). El **despill** no lo hace el modelo: es una regla fija que se aplica después. Por eso aquí es un paso **en vivo** dentro del nodo, sobre el fg: lo cambias y se ve al instante, sin Procesar.
 
 - **Pantalla**: verde o azul (el canal que baja el despill).
-- **Despill**: *Average (CorridorKey)* es exactamente la regla de CorridorKey (baja el verde que supera el promedio de rojo y azul y reparte la mitad a cada uno); *Máximo (suave)* solo baja el verde que supera al mayor de los dos, así respeta amarillos y tonos cálidos (corrige menos que Average); *Ninguno* deja el fg crudo. **Fuerza** va de 0 a 1 (CorridorKey usa 0,5 por defecto, que corrige solo la mitad del exceso).
+- **Despill**: *Average* es exactamente la regla de CorridorKey (baja el verde que supera el promedio de rojo y azul y reparte la mitad a cada uno); *Máximo* solo baja el verde que supera al mayor de los dos, así respeta amarillos y tonos cálidos (corrige menos que Average); *Ninguno* deja el fg crudo. **Fuerza** va de 0 a 1 (CorridorKey usa 0,5 por defecto, que corrige solo la mitad del exceso).
 - Si el fg del modelo ya viene limpio, mover el despill casi no cambia nada: es normal (en una toma de prueba, a fuerza 1 Average cambiaba ~1 % de los píxeles).
 - **Ver > cutout** = el fg con ese despill, premultiplicado por el alpha.
-- **Ver > fg + alpha (straight)** = el fg crudo con el alpha en el canal alpha, **sin premultiplicar**. Sirve para despillar con tu propio nodo (DespillMadness u otro): conéctalo a esta vista, pon **Despill = Ninguno** si no quieres doble despill, y haz el **Premult** después.
+- **Ver > fg + alpha** = el fg crudo con el alpha en el canal alpha, **sin premultiplicar**. Sirve para despillar con tu propio nodo (DespillMadness u otro): conéctalo a esta vista, pon **Despill = Ninguno** si no quieres doble despill, y haz el **Premult** después.
+
+### Hint
+
+- **Usar hint**: desmárcalo para procesar sin hint sin desconectar el nodo.
+- **Hint en**: *Todos los frames* (un matte por frame, lo más controlado) o *Solo el primer frame* (el modelo parte del hint del primer frame del rango y sigue al sujeto solo; puede derivar en tomas largas u oclusiones).
+- **Calidad interna** es la confianza en lo que el modelo arrastra entre ventanas temporales (0,95 por defecto); **Hint sin arrastre** hace que el hint mande tal cual en todos los frames.
+- **Avanzado > Memoria**: *Auto* (recomendado) activa el modo de memoria baja solo cuando hace falta; *Baja* lo fuerza (más lento, menos VRAM); *Mínima* baja además todos los ajustes finos, para tarjetas de 4 a 6 GB o cuando *Baja* no alcanza.
+
+### Plate original en el interior
+
+La casilla **plate original en el interior** (en **3 · ajustar**, marcada por defecto) usa el plate original dentro del sujeto y el resultado de CorridorKey solo en los bordes.
+
+- **Por qué**: el fg de CorridorKey es el color del sujeto recalculado por el modelo. En los bordes eso es lo valioso: quita la pantalla mezclada en el pelo, el motion blur y las transparencias. Dentro del sujeto no hay nada que separar, y ahí el fg es una copia del plate de menor calidad: si procesas en HD o 720p viene reescalado (más blando que tu plate) y puede perder grano y detalle fino.
+- **Qué hace**: donde el alpha es sólido (de 0,95 a 1) pone los píxeles del plate; en los bordes y las zonas translúcidas deja el fg del modelo. El despill se aplica después, sobre todo el sujeto.
+- **Cuándo usarla**: al procesar en HD o 720p un plate de más resolución, casi siempre.
+- **Qué revisar**: el límite entre el interior y el borde. El umbral es fijo y no tiene erosión; si ves una línea ahí, desmárcala.
+- Es en vivo: no vuelve a procesar. Cambia las vistas cutout, fg y fg + alpha; los EXR guardados no cambian (son siempre el alpha y el fg crudos del modelo).
 
 ### HD interno: no pongas un Reformat
 
-Con **Resolución = HD (recomendado)** el nodo reduce el clip a 1920 px de ancho **por dentro** y devuelve el resultado al tamaño original del clip.
+Con **Resolución = HD** el nodo reduce el clip a 1920 px de ancho **por dentro** y devuelve el resultado al tamaño original del clip.
 **No hace falta poner un Reformat antes**: conecta el clip tal cual (4K, por ejemplo). Si lo reduces tú antes, el resultado saldrá a ese tamaño reducido.
 En pruebas con un plano 4K, el key calculado en HD y subido a 4K difirió del 4K nativo en el 0,13 % de los píxeles, casi todos en los bordes de los dedos, y fue unas 4 veces más rápido.
 Usa **Nativa** solo si necesitas el máximo detalle de borde (pelo fino, motion blur); en una GPU de 12 GB conviene entonces conectar un hint.
 
-**Ventana temporal**: cuántos frames mira el modelo a la vez. Más frames = key más estable en el tiempo y mejor borde, pero más memoria de GPU (en las pruebas pesó más que la resolución). *Auto* (recomendado) deja que CorridorKey elija según la memoria libre; *Frame a frame* es lo más liviano pero puede parpadear; 8 a 80 fija la ventana. En GPUs de 16 GB o menos una ventana fija usa siempre el modo de memoria baja, y si supera lo recomendado (12 GB: 720p 80, HD 24, 4K 8) el nodo pide confirmación: en un PC de 12 GB, una ventana de 24 en 4K lo colgó.
+**Ventana temporal**: cuántos frames mira el modelo a la vez. Más frames = key más estable en el tiempo y mejor borde, pero más memoria de GPU (en las pruebas pesó más que la resolución). *Auto* (recomendado) deja que CorridorKey elija según la memoria libre; *Frame a frame* es lo más liviano pero puede parpadear; 2 a 80 fija la ventana. En GPUs de 16 GB o menos una ventana fija usa siempre el modo de memoria baja, y si supera lo recomendado para tu tarjeta y la resolución (la tabla de CorridorKey, de 4 a 48 GB) el nodo pide confirmación: en un PC de 12 GB, una ventana de 24 en 4K lo colgó.
+
+**Si falta memoria de GPU**, el nodo no falla a la primera: reintenta solo con la ventana siguiente más chica, hasta frame a frame, y el estado dice con cuál terminó (por ejemplo, *Ventana: 4 frames (bajó de 16 por memoria)*).
 
 Antes de convertir, el nodo **revisa el espacio en disco** (temporales y carpeta de salida) y, si no alcanza, avisa sin empezar.
 
-**720p (liviano)** reduce a 1280 px de ancho, también por dentro del nodo. Es para equipos con poca memoria de GPU o para una prueba rápida: va más rápido y gasta menos memoria, con menos detalle en los bordes. Un clip que ya es más chico que el ancho elegido no se agranda.
+**720p** reduce a 1280 px de ancho, también por dentro del nodo. Es para equipos con poca memoria de GPU o para una prueba rápida: va más rápido y gasta menos memoria, con menos detalle en los bordes. Un clip que ya es más chico que el ancho elegido no se agranda.
 
 ### Dónde quedan los archivos
 
@@ -102,7 +121,7 @@ Antes de convertir, el nodo **revisa el espacio en disco** (temporales y carpeta
 
 Son el alpha y el fg **crudos, sin despill**; el cutout se calcula en vivo dentro del nodo y no se guarda en disco. El nodo guardado en el script lee estos archivos.
 
-- **Carpeta de salida vacía = automática**: la carpeta `2_prerenders` que está junto a `1_projects`, subiendo desde donde guardaste el script (`...\SHOW_101_0500\Comp\1_projects\x.nk` guarda en `...\Comp\2_prerenders`). Si el script no está en esa estructura (o no está guardado), usa `%LOCALAPPDATA%\CorridorKey\salida`. Puedes escribir otra carpeta.
+- **Carpeta**: aparece escrita la automática, la carpeta `2_prerenders` que está junto a `1_projects`, subiendo desde donde guardaste el script (`...\SHOW_101_0500\Comp\1_projects\x.nk` guarda en `...\Comp\2_prerenders`). Con el script sin guardar (o fuera de esa estructura), usa la `2_prerenders` de Comp del shot al que pertenece el clip (`...\SHOW_101_0500\_input\plate\x.exr` guarda en `...\SHOW_101_0500\Comp\2_prerenders`), solo si esa carpeta ya existe. Si nada de eso aplica, usa `%LOCALAPPDATA%\CorridorKey\salida`. Si escribes otra se respeta; si la borras, vuelve la automática.
 - **Nombre**: aparece escrito el nombre automático, el del clip (sin número de frame) + `_ck`, por ejemplo `SHOW_101_1200_aPlate_v001_ck`, para que lo retoques. Si lo cambias a mano se respeta; si lo borras, vuelve a ser automático y sigue al clip.
 - Los archivos llevan el **número de frame real** del shot (1001…) y son **HD** si elegiste HD (el nodo los reescala al tamaño del clip solo dentro de Nuke).
 - **Versión**: Procesar **reemplaza** los archivos de esa versión, así no se acumula espacio. Para conservar lo anterior, sube el número de **Versión** antes de procesar: se crea `..._v02` y la `v01` queda intacta.
@@ -111,7 +130,7 @@ Son el alpha y el fg **crudos, sin despill**; el cutout se calcula en vivo dentr
 **Los temporales (no se suben)** viven en tu PC, en `%LOCALAPPDATA%\CorridorKey\runs\`, nunca junto al shot:
 
 - El clip (y el hint) se convierten una vez. Si no cambió nada de lo que alimenta al nodo, **reutiliza la conversión**: cambiar la calidad del hint o lo que ves no reconvierte (el despill ni siquiera corre el modelo: es en vivo). Si cambias algo aguas arriba (un Grade, el Read, el rango), lo detecta y reconvierte.
-- **Borrar temp.** (en el nodo) quita el clip y el hint convertidos y no toca la carpeta de salida. **CorridorKey > Limpiar carpetas de nodos borrados** quita los temporales de nodos que ya no están en el script.
+- **Mantenimiento > borrar temporales** (en el nodo) quita el clip y el hint convertidos y no toca la carpeta de salida. **CorridorKey > Limpiar carpetas de nodos borrados** quita los temporales de nodos que ya no están en el script.
 
 ## Consejos
 
@@ -131,6 +150,15 @@ Son el alpha y el fg **crudos, sin despill**; el cutout se calcula en vivo dentr
 ## Desinstalar
 
 Doble clic en **desinstalar.bat** (quita el menú y, si lo confirmas, borra los ~10 GB de modelos y Python).
+
+## Créditos y licencia
+
+Este paquete instala y usa [CorridorKey 2.0](https://github.com/nikopueringer/CorridorKey2.0), de Corridor Digital (modelo diseñado y entrenado por Zachary Harris junto a Niko y Corridor Digital). Se distribuye bajo la misma licencia: CC BY-NC-SA 4.0 con los términos adicionales de Corridor Digital (ver [LICENSE](LICENSE)).
+
+- No es el plugin oficial de Corridor Digital, que se vende en [corridorkey.com](https://corridorkey.com).
+- El código y los pesos de CorridorKey se descargan del repositorio original en cada PC; este paquete no los incluye.
+- Las imágenes que produces son tuyas y puedes usarlas en trabajos comerciales.
+- Una empresa con más de USD 20 millones de facturación anual (o quien trabaje a nombre de ella) necesita comprar un asiento por persona en corridorkey.com.
 
 ## Para quien mantiene el paquete
 
