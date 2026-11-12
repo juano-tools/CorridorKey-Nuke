@@ -43,6 +43,8 @@ Desde la 0.7.1, el nodo trae "suavidad" en "plate original en el interior" y las
 2. Conecta el plate a la entrada `clip`. Si tienes un matte del sujeto, conéctalo a `hint`; usa su alpha. El hint es opcional.
 3. Elige la resolución y dale a ▶ Procesar. Puedes cancelar desde la barra de progreso.
 
+> **Ojo con las pantallas azules y las pantallas detrás de un set.** Sin hint, CorridorKey elige solo el sujeto, casi siempre las personas, y puede recortar también el set: paredes, marcos de ventana, muebles. En esos shots conecta siempre un hint con 0 en la pantalla y 1 en todo lo que se queda. Basta un keyer rápido (Keylight, IBK) con un poco de blur, pero tiene que estar limpio en la pantalla: si el hint queda gris o con ruido ahí, el alpha sale igual. Más detalles en Hint.
+
 El nodo saca el cutout premultiplicado al tamaño del plate. Con "ver" cambias entre cutout, alpha, fg, fg + alpha y el plate, sin volver a procesar.
 
 Si necesitas otra pasada sin duplicar el nodo, sácala con un Shuffle. La salida lleva dos layers, las dos sin premultiplicar y con el alpha:

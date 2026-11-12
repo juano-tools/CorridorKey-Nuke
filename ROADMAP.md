@@ -29,9 +29,9 @@ Estado al 2026-11-12. Versión en el repo: **0.7.1** (la 0.6 nunca se repartió)
 
 Pedida el 2026-11-12. Varios shots en un script, cada uno con su nodo CorridorKey, procesados en una sola tanda y sin bloquear Nuke.
 
-- [ ] Medir cuánto tarda `load_model` (no está en los logs): decide cuánto pesa cargar el modelo una sola vez frente a no bloquear Nuke.
+- [x] Medir cuánto tarda `load_model` (2026-11-12, RTX 4070 Ti, caché de disco caliente): imports 1,4 s + `load_model` 8,5–9,4 s ≈ 10 s por proceso, 2,3 GB de VRAM. Un shot de 128 frames en HD tarda ~200 s: cargar el modelo es ~5 %. Decisión: no cargarlo una sola vez; un proceso de `infer.py` por shot, como hoy.
 - [ ] Menú **CorridorKey > Procesar seleccionados**: Nuke convierte el plate y el hint de cada nodo (reutiliza la conversión si nada cambió) y lanza un solo proceso en segundo plano.
-- [ ] Script de cola nuestro, sin tocar CorridorKey: importa su `infer.py`, carga el modelo una vez y llama a `run_inference` por shot con los mismos argumentos que hoy (`core.build_argv`). Un log y un estado por shot, y reintento por memoria por shot.
+- [ ] Script de cola nuestro, sin tocar CorridorKey: corre `infer.py` shot por shot con los mismos argumentos que hoy (`core.build_argv`). Un log y un estado por shot, y reintento por memoria por shot.
 - [ ] En Nuke, un temporizador revisa el estado: cada nodo muestra en cola, procesando o listo, y al terminar un shot se publican sus EXR y se conecta el resultado como hoy.
 - [ ] Si se cierra Nuke a mitad, el proceso sigue; al reabrir el script, el nodo recoge lo que terminó.
 - [ ] Probar en Nuke 15.1 (el temporizador usa Qt).
@@ -60,7 +60,7 @@ Pedida el 2026-11-12. Varios shots en un script, cada uno con su nodo CorridorKe
 
 ## Ideas aparcadas
 
-- Hint con un frame de referencia arbitrario (el CLI solo documenta el primer frame).
+- Hint con un frame de referencia arbitrario. El plugin de pago lo tiene ("Reference Frame": propaga hacia adelante y hacia atrás, según help.corridorkey.com/docs/panel). El CLI no: `--start_mode` solo elige qué tramo cargar en un clip parcial. Se podría imitar con dos corridas desde ese frame, una hacia adelante y otra con el clip invertido, y juntarlas.
 - Color de despill automático.
 - EXR en 32 bit float (`--exr_dtype`) y `--stage2_batch` para GPUs grandes.
 - Umbral ajustable en "plate original en el interior" (la suavidad ya está desde la 0.7.1).
