@@ -74,7 +74,7 @@ Un plate más chico que la resolución elegida no se agranda.
 
 - "usar hint" sirve para probar sin hint sin desconectar el nodo.
 - "hint en": todos los frames o solo el primero. Con el primer frame el modelo sigue al sujeto por su cuenta, y en tomas largas o con oclusiones se puede perder.
-- "calidad del hint": 0,95 para un roto de artista, 0,75 para un matte automático o un key rápido.
+- "calidad del hint": 0,95 para un roto de artista, 0,75 para un matte automático o un key rápido, 0,5 o menos si es aproximado.
 - "calidad interna" y "hint sin arrastre" controlan cuánto se apoya el modelo en lo que arrastra de un tramo de frames al siguiente. Déjalos como están salvo que el key derive.
 
 ### Despill
@@ -92,7 +92,7 @@ Si prefieres tu propio despill (DespillMadness u otro), pon "ver" en fg + alpha 
 
 Con esta casilla marcada, el nodo usa el plate original en las zonas sólidas del sujeto y el fg de CorridorKey solo en los bordes.
 
-El fg del modelo es el que limpia los bordes: saca el verde o el azul del croma que se mezcla en el pelo, el motion blur y las transparencias. En el interior no hay nada que limpiar, y si procesaste en HD el fg viene reescalado, más blando y con menos grano. Con la casilla marcada, el interior conserva el detalle y el grano del plate.
+El fg del modelo es el que limpia los bordes: saca el verde o el azul del croma que se mezcla en el pelo, el motion blur y las transparencias. En el interior no hay nada que limpiar, y si procesaste en HD el fg viene reescalado, más blando y con menos grano. Aun en resolución nativa, el fg no es idéntico al plate: la red calcula con poca precisión (bfloat16) y deja de 1 a 2 % de diferencia. Con la casilla marcada, el interior conserva el detalle y el grano del plate.
 
 Si se nota una línea entre el interior y el borde, sube la "suavidad" (en píxeles; viene en 4) o desmarca la casilla.
 
@@ -129,7 +129,7 @@ Los temporales quedan en tu PC, en `%LOCALAPPDATA%\CorridorKey\runs`, nunca en e
 
 ## Otras cosas
 
-- El plate se manda en el espacio de trabajo del script (ACEScg, por ejemplo), sin convertir. En las pruebas el modelo respondió igual que con Rec.709 lineal.
+- El plate se manda en el espacio de trabajo del script (ACEScg, por ejemplo), sin convertir. CorridorKey no maneja espacios de color y su README recomienda convertir ACEScg, Rec.2020 o log a lineal antes. En nuestras pruebas, ACEScg dio lo mismo que Rec.709 lineal; con pantalla azul todavía no se ha comparado.
 - Mientras procesa, Nuke queda bloqueado con la barra de progreso.
 - Si abres el script en una PC sin el plugin, el nodo se ve pero los botones no hacen nada.
 
@@ -151,6 +151,7 @@ Este paquete usa [CorridorKey 2.0](https://github.com/nikopueringer/CorridorKey2
 - No es el plugin oficial de Corridor Digital, que se vende en [corridorkey.com](https://corridorkey.com).
 - El código y los pesos de CorridorKey se descargan del repositorio original en cada PC. Este paquete no los incluye.
 - Las imágenes que sacas son tuyas y puedes usarlas en trabajos comerciales.
+- CorridorKey se apoya en tres modelos base: [C-RADIO](https://github.com/NVlabs/RADIO) de NVIDIA, [MoGe](https://github.com/microsoft/MoGe) de Microsoft y [RVM](https://github.com/google-deepmind/representations4d) de Google DeepMind.
 
 ## Para quien mantiene el paquete
 

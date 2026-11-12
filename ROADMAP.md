@@ -35,7 +35,7 @@ Pedida el 2026-11-12. Varios shots en un script, cada uno con su nodo CorridorKe
 - [ ] En Nuke, un temporizador revisa el estado: cada nodo muestra en cola, procesando o listo, y al terminar un shot se publican sus EXR y se conecta el resultado como hoy.
 - [ ] Si se cierra Nuke a mitad, el proceso sigue; al reabrir el script, el nodo recoge lo que terminó.
 - [ ] Probar en Nuke 15.1 (el temporizador usa Qt).
-- [ ] Pantalla azul: sin buenos resultados (2026-11-12, 4K nativo con hint); el repo de CorridorKey solo habla de verde. Probar el truco de intercambiar verde y azul antes del nodo y deshacerlo después (despill en Verde). Si funciona, que el nodo lo haga por dentro con pantalla Azul; si no, avisar en el README que azul no se recomienda.
+- [ ] Pantalla azul: sin buenos resultados (2026-11-12, 4K nativo con hint); el repo de CorridorKey solo habla de verde. Probar el truco de intercambiar verde y azul antes del nodo y deshacerlo después (despill en Verde). Probar también mandar el plate en Rec.709 lineal en vez de ACEScg (el README de CorridorKey pide convertir ACEScg; sus modelos base ven una versión SDR) y devolver el fg al espacio de trabajo. Si funciona, que el nodo lo haga por dentro con pantalla Azul; si no, avisar en el README que azul no se recomienda.
 
 ## Poca VRAM, fase 2 (medir en GPU antes de decidir)
 
