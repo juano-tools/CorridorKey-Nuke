@@ -77,11 +77,13 @@ Un plate más chico que la resolución elegida no se agranda.
 - "calidad del hint": 0,95 para un roto de artista, 0,75 para un matte automático o un key rápido, 0,5 o menos si es aproximado.
 - "calidad interna" y "hint sin arrastre" controlan cuánto se apoya el modelo en lo que arrastra de un tramo de frames al siguiente. Déjalos como están salvo que el key derive.
 
+Sin hint, el modelo decide solo cuál es el sujeto, y casi siempre elige a las personas. Si la pantalla está detrás de un set (ventanas, por ejemplo), sin hint también recorta el set: paredes, marcos y muebles. La solución es un hint con 0 en la pantalla y 1 en todo lo que se queda. Basta un keyer rápido con un poco de blur: el borde lo rehace el modelo, no lo copia del hint. El hint tiene que ser claro en la pantalla, porque donde el hint duda (gris), el alpha también sale gris.
+
 ### Despill
 
 El despill no lo hace el modelo: es una regla que se aplica al fg después. Por eso aquí es en vivo.
 
-- "pantalla": verde o azul.
+- "pantalla": verde o azul. El modelo separa bien la pantalla azul. Si en un shot azul el set desaparece, falta el hint (ver Hint), no es por el color.
 - Average es la regla de CorridorKey. Máximo es más suave y respeta mejor los amarillos y la piel. Ninguno deja el fg crudo.
 - "fuerza" va de 0 a 1. CorridorKey usa 0,5.
 - Si el fg ya viene limpio, el despill casi no cambia nada.
@@ -129,7 +131,7 @@ Los temporales quedan en tu PC, en `%LOCALAPPDATA%\CorridorKey\runs`, nunca en e
 
 ## Otras cosas
 
-- El plate se manda en el espacio de trabajo del script (ACEScg, por ejemplo), sin convertir. CorridorKey no maneja espacios de color y su README recomienda convertir ACEScg, Rec.2020 o log a lineal antes. En nuestras pruebas, ACEScg dio lo mismo que Rec.709 lineal; con pantalla azul todavía no se ha comparado.
+- El plate se manda en el espacio de trabajo del script (ACEScg, por ejemplo), sin convertir. CorridorKey no maneja espacios de color y su README recomienda convertir ACEScg, Rec.2020 o log a lineal antes. En nuestras pruebas, ACEScg dio lo mismo que Rec.709 lineal, también con pantalla azul.
 - Mientras procesa, Nuke queda bloqueado con la barra de progreso.
 - Si abres el script en una PC sin el plugin, el nodo se ve pero los botones no hacen nada.
 

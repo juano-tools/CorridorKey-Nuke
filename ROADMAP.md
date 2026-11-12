@@ -35,7 +35,8 @@ Pedida el 2026-11-12. Varios shots en un script, cada uno con su nodo CorridorKe
 - [ ] En Nuke, un temporizador revisa el estado: cada nodo muestra en cola, procesando o listo, y al terminar un shot se publican sus EXR y se conecta el resultado como hoy.
 - [ ] Si se cierra Nuke a mitad, el proceso sigue; al reabrir el script, el nodo recoge lo que terminó.
 - [ ] Probar en Nuke 15.1 (el temporizador usa Qt).
-- [ ] Pantalla azul: sin buenos resultados (2026-11-12, 4K nativo con hint); el repo de CorridorKey solo habla de verde. Probar el truco de intercambiar verde y azul antes del nodo y deshacerlo después (despill en Verde). Probar también mandar el plate en Rec.709 lineal en vez de ACEScg (el README de CorridorKey pide convertir ACEScg; sus modelos base ven una versión SDR) y devolver el fg al espacio de trabajo. Si funciona, que el nodo lo haga por dentro con pantalla Azul; si no, avisar en el README que azul no se recomienda.
+- [x] Pantalla azul (probado el 2026-11-12 en un shot con ventanas azules detrás de un set, 128 frames en HD, sin hint): el modelo separa bien el azul (alpha 0,001 en la pantalla, pelo limpio) en ACEScg, con una matriz azul→verde, con el swap G/B y sin `--frame_dir_linear`. El problema es otro: sin hint elige a las personas como sujeto y recorta también el set (alpha 0,70–0,77 en el set; con la matriz 0,94, pero ensucia la pantalla). Con el hint de un keyer azul simple el set queda entero (0,998), la pantalla sigue en 0 y el borde lo rehace el modelo. No se integra la matriz; el README explica el hint para pantallas detrás de un set. Una prueba anterior en otro plate (ventanas azules tenues) dio alpha gris porque el hint era gris en la pantalla.
+- [ ] Idea: con pantalla Azul o Verde y sin hint conectado, que el nodo genere solo un hint de keyer (0 en la pantalla, 1 en el resto, con blur). Arreglaría los shots de set con ventanas sin pedirle nada al artista.
 
 ## Poca VRAM, fase 2 (medir en GPU antes de decidir)
 
