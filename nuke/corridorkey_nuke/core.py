@@ -19,6 +19,7 @@ LOW_MEM = ["--low_vram", "--low_vram_swin_window_batch", "8", "--low_vram_mlp_ch
 LOW_MEM_MIN = ["--low_vram", "--low_vram_swin_window_batch", "4", "--low_vram_mlp_chunk_tokens", "16384",
                "--low_vram_foundation_chunk", "1", "--low_vram_full_attn_query_chunk_tokens", "1024"]
 LOW_MEM_WINDOW = 8
+RELEVO_QUALITY = 0.95  # confianza en el alpha de un tramo como hint del otro; = arrastre entre ventanas de CorridorKey
 LOW_MEM_MAX_MIB = 16384
 
 # Ventana temporal que elige CorridorKey según la memoria de la GPU y la resolución (tabla "Long Clips And Low VRAM"
@@ -181,6 +182,61 @@ def disk_problems(needs, free=free_mb):
 def output_dir(out_dir, in_dir, kind):
     """infer.py escribe <output_dir>/<nombre de la carpeta de entrada>_<salida>_exr/."""
     return os.path.join(out_dir, "%s_%s_exr" % (os.path.basename(os.path.normpath(in_dir)), kind))
+
+
+def split_at(in_dir, work, base, k):
+    """Tramos para un hint en el frame k (desde 0) del clip: CorridorKey solo acepta el hint en el primer frame, así que
+    se procesa k..fin hacia adelante y el resto con el clip invertido. Cada tramo es una carpeta de enlaces a los EXR ya
+    convertidos, nombrados en el orden en que se procesan (infer.py los lee por nombre).
+    El frame con hint sale distinto de sus vecinos propagados (medido: salta por los dos lados, ver ROADMAP). Por eso el
+    tramo hacia atrás parte en k+1 y su hint es el alpha que el tramo hacia adelante dio ahí ("relevo", hint_relevo):
+    k sale propagado, igual que sus vecinos, y merge_tramos descarta de cada tramo su frame con hint.
+    Devuelve [{"in", "frames", "label", "relevo"}]; frames = posición en el clip de cada frame del tramo, en ese orden."""
+    files = sorted(f for f in os.listdir(in_dir) if f.lower().endswith(".exr"))
+    n, specs, tramos = len(files), [], []
+    if k < n - 1 or n == 1:  # referencia en el último frame: solo hacia atrás, con el hint del artista
+        specs.append(("adelante", range(k, n), "hacia adelante", False))
+    if k > 0:
+        specs.append(("atras", range(min(k + 1, n - 1), -1, -1), "hacia atrás", k < n - 1))
+    for name, idx, label, relevo in specs:
+        d = os.path.join(work, name)
+        safe_rmtree(d, base)
+        os.makedirs(d)
+        for j, i in enumerate(idx):
+            src, dst = os.path.join(in_dir, files[i]), os.path.join(d, "plate.%06d.exr" % j)
+            try:
+                os.link(src, dst)  # misma unidad: no ocupa disco
+            except OSError:
+                shutil.copyfile(src, dst)
+        tramos.append({"in": d, "frames": list(idx), "label": label, "relevo": relevo})
+    return tramos
+
+
+def hint_relevo(tramos, outs, t):
+    """Hint de un tramo con relevo: el alpha que el primer tramo (outs[0]) ya escribió para el frame donde parte t."""
+    src = output_dir(outs[0], tramos[0]["in"], "alpha")
+    files = sorted(f for f in os.listdir(src) if f.lower().endswith(".exr"))
+    return os.path.join(src, files[tramos[0]["frames"].index(t["frames"][0])])
+
+
+def merge_tramos(tramos, outs, dst, in_dir, kinds):
+    """Junta lo que escribió infer.py en cada tramo (outs[i] = su carpeta de salida) en la carpeta de una corrida
+    normal (output_dir(dst, in_dir, kind)), en el orden del clip. Si un frame sale en dos tramos, se descarta el que
+    es el frame con hint de su tramo y queda el propagado."""
+    propagados = {i for t in tramos for i in t["frames"][1:]}
+    for kind in kinds:
+        d = output_dir(dst, in_dir, kind)
+        os.makedirs(d, exist_ok=True)
+        for t, out in zip(tramos, outs):
+            src = output_dir(out, t["in"], kind)
+            files = sorted(f for f in os.listdir(src) if f.lower().endswith(".exr"))
+            if len(files) != len(t["frames"]):
+                raise RuntimeError("El tramo %s escribió %d de %d frames en %s."
+                                   % (t["label"], len(files), len(t["frames"]), src))
+            for j, (f, i) in enumerate(zip(files, t["frames"])):
+                p = os.path.join(d, "ck_%06d.exr" % i)
+                if not (j == 0 and i in propagados) and not os.path.exists(p):
+                    os.replace(os.path.join(src, f), p)
 
 
 def progress(log_text, written, n_frames):
@@ -376,3 +432,123 @@ def read_log(path):
             return f.read()
     except OSError:
         return ""
+
+
+# Cola (0.8): cada nodo tiene en su carpeta de trabajo el trabajo que mandó (lo escribe Nuke) y su estado (lo escribe
+# cola.py mientras corre; Nuke lo pasa a "publicado" al conectar el resultado).
+JOB, STATE = "trabajo.json", "estado.json"
+ACTIVE = ("en cola", "procesando")  # el proceso de fondo todavía tiene algo que hacer
+FINAL = ("listo", "error", "cancelado")  # el proceso de fondo terminó; falta que Nuke lo publique o lo muestre
+
+
+def write_json(path, data):
+    """Escribe y reemplaza de una vez: quien lee nunca ve un archivo a medias."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    for i in range(20):  # Windows no deja reemplazar un archivo que el otro proceso tiene abierto en ese instante
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == 19:
+                raise
+            time.sleep(0.1)
+
+
+def read_json(path):
+    """El contenido, o None si no existe o no se puede leer."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def set_state(work, state, **info):
+    write_json(os.path.join(work, STATE), dict(info, estado=state, t=time.time()))
+
+
+def get_state(work):
+    return read_json(os.path.join(work, STATE)) or {}
+
+
+def retry_window(window, limit, log_text):
+    """Tras quedarse sin memoria de GPU: (ventana que falló, ventana siguiente más chica o None si ya era frame a
+    frame). Con ventana automática, la que falló es la que eligió CorridorKey o, si no la informó, la recomendada."""
+    failed = window or auto_window(log_text) or limit
+    return failed, smaller_window(failed)
+
+
+def fmt_secs(secs):
+    """132 -> '2 min 12 s'; 45 -> '45 s'."""
+    secs = int(secs)
+    return "%d min %02d s" % divmod(secs, 60) if secs >= 60 else "%d s" % secs
+
+
+def job_progress(job, st, kind="alpha"):
+    """(fracción 0-1, mensaje) de un trabajo según su estado y el log de infer.py. Con tramos (frame de referencia),
+    el avance es el de todo el trabajo y el mensaje dice en qué tramo va."""
+    if st.get("estado") != "procesando":
+        return 0.0, "En cola: espera a que termine otro proceso de CorridorKey"
+    work, tramos, i = job["work"], job.get("tramos"), st.get("tramo", 0)
+    t = tramos[i] if tramos else {"in": os.path.join(work, "in"), "frames": range(job["n"])}
+    watch = output_dir(os.path.join(work, st["out_name"]), t["in"], kind)
+    frac, msg = progress(read_log(os.path.join(work, "run.log")), count_exr(watch), len(t["frames"]))
+    if not tramos:
+        return frac, msg
+    done = sum(len(x["frames"]) for x in tramos[:i])
+    total = sum(len(x["frames"]) for x in tramos)
+    return (done + frac * len(t["frames"])) / total, "Tramo %s (%d de %d) · %s" % (t["label"], i + 1, len(tramos), msg)
+
+
+STATE_LABELS = {"en cola": "En cola", "procesando": "Procesando", "listo": "Terminado, falta publicar",
+                "publicado": "Publicado", "error": "Error", "cancelado": "Cancelado"}
+
+
+def queue_rows(now=None, hours=24):
+    """Los trabajos de todos los scripts, para el panel de la cola: primero el que se procesa, después los que esperan
+    (en orden de llegada) y al final los terminados en las últimas `hours` horas, del más reciente al más viejo."""
+    now = now or time.time()
+    runs, rows = os.path.join(home(), "runs"), []
+    for key in (os.listdir(runs) if os.path.isdir(runs) else []):
+        for node in os.listdir(os.path.join(runs, key)) if os.path.isdir(os.path.join(runs, key)) else []:
+            work = os.path.join(runs, key, node)
+            st, job = get_state(work), read_json(os.path.join(work, JOB))
+            state = st.get("estado")
+            if not state or not job or state not in ACTIVE and now - st.get("t", 0) > hours * 3600:
+                continue
+            frac, detail = (None, "")
+            if state == "procesando":
+                try:
+                    frac, detail = job_progress(job, st)
+                except Exception:  # el log o la carpeta de salida cambian mientras se leen
+                    frac = 0.0
+            elif state == "error":  # la línea que dice qué pasó, no la ruta del log
+                lines = [l for l in st.get("msg", "").splitlines() if l.strip() and not l.startswith("Log completo")]
+                detail = lines[-1] if lines else ""
+            secs = now - st.get("inicio", st.get("t", now)) if state == "procesando" else st.get("segundos")
+            rows.append({"work": work, "estado": state, "texto": STATE_LABELS.get(state, state),
+                         "shot": job.get("name") or node, "script": job.get("script") or key,
+                         "node": job.get("node"), "avance": frac, "detalle": detail,
+                         "tiempo": fmt_secs(secs) if secs is not None else "", "t": st.get("t", 0),
+                         "msg": st.get("msg", "")})
+    first = {"procesando": 0, "en cola": 1}
+    rows.sort(key=lambda r: (first.get(r["estado"], 2), r["t"] if r["estado"] in ACTIVE else -r["t"]))
+    return rows
+
+
+def cancel_job(work):
+    """Cancela un solo trabajo sin cortar la cola: si espera, la cola lo salta; si se está procesando, se corta su
+    infer.py (cola.py anota el PID en infer.pid) y la cola sigue con el siguiente. False si ya no estaba activo."""
+    st = get_state(work)
+    if st.get("estado") not in ACTIVE:
+        return False
+    set_state(work, "cancelado", **{k: v for k, v in st.items() if k not in ("estado", "t")})
+    if st["estado"] == "procesando":
+        try:
+            with open(os.path.join(work, "infer.pid")) as f:
+                kill(int(f.read().strip()))
+        except (OSError, ValueError):
+            pass  # infer.py aún no arrancaba: la cola lo ve cancelado y no lo corre
+    return True

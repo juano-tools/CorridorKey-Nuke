@@ -8,12 +8,13 @@ Los EXR de resultado se guardan en la carpeta de salida (por defecto <depto>/2_p
 import hashlib
 import os
 import time
+import traceback
 
 import nuke
 
 from . import __version__, core
 
-GREEN, AMBER = "#7fd1a8", "#f2a65a"  # los mismos del nodo SHARP Splat
+GREEN, AMBER, RED = "#7fd1a8", "#f2a65a", "#e8766b"  # verde y ámbar, los mismos del nodo SHARP Splat
 
 FORMAT_VERSION = "1"  # súbela si cambia cómo se escribe el plate: invalida lo ya convertido
 KINDS = ("alpha", "fg")  # lo que entrega el modelo y se guarda; el cutout y el straight se calculan en vivo
@@ -22,7 +23,8 @@ DESPILL_ITEMS = ["Average", "Máximo", "Ninguno"]  # = entradas 0..2 del Switch 
 SCREEN_ITEMS = ["Verde", "Azul"]  # = parent.despill_color en las expresiones (core.DESPILL_EXPR)
 WINDOW_ITEMS = ["Auto", "Frame a frame", "2", "4", "8", "16", "24", "48", "80"]
 MEMORY_ITEMS = ["Auto", "Baja", "Mínima"]  # = False / True / "min" en core.build_argv
-HINT_FRAMES = ["Todos los frames", "Solo el primer frame"]  # = --hint_video / --hint_first_frame
+# = --hint_video / --hint_first_frame / --hint_first_frame en dos tramos desde ese frame (core.split_at)
+HINT_FRAMES = ["Todos los frames", "Solo el primer frame", "Un frame de referencia"]
 # (nombre en el desplegable, ancho al que se reduce dentro del nodo (None = el del clip), cómo lo nombra el estado)
 RES = (("HD", 1920.0, "HD interno"), ("720p", 1280.0, "720p interno"),
        ("Nativa", None, "resolución nativa"))
@@ -70,7 +72,12 @@ TIPS = {
     "hint_frames": (
         "Todos los frames: el hint acompaña a cada frame del clip (lo más controlado).\n"
         "Solo el primer frame: el modelo recibe el hint en el primer frame del rango y sigue al sujeto solo "
-        "(sirve si solo tienes un matte de partida; puede derivar en tomas largas u oclusiones)."),
+        "(sirve si solo tienes un matte de partida; puede derivar en tomas largas u oclusiones).\n"
+        "Un frame de referencia: el hint solo en el frame que elijas, el más limpio. Se procesa en dos tramos desde "
+        "ese frame, uno hacia adelante y otro hacia atrás, y se juntan; tarda casi lo mismo. El tramo hacia atrás "
+        "parte un frame después y sigue el resultado del otro, para que el frame de referencia no salte."),
+    "hint_ref": ("Frame donde está el hint, dentro del rango. Al elegir 'Un frame de referencia' toma el frame "
+                 "actual del timeline."),
     "carry_quality": (
         "Confianza en lo que el propio modelo arrastra de una ventana temporal a la siguiente (CorridorKey usa 0.95). "
         "Solo actúa con hint y con ventana temporal de más de 1 frame."),
@@ -310,8 +317,8 @@ def _sync_out_dir(node):
     return cur
 
 
-def _set_status(node, text):
-    node["status"].setValue("<span style='color:%s'>%s</span>" % (GREEN, text.replace("\n", "<br>")))
+def _set_status(node, text, color=GREEN):
+    node["status"].setValue("<span style='color:%s'>%s</span>" % (color, text.replace("\n", "<br>")))
 
 
 def _hidden(node, name):
@@ -363,6 +370,8 @@ def refresh_state(node):
     for k, on in (("hint_frames", used is not None), ("hint_quality", used is not None), ("no_carry", used is not None),
                   ("carry_quality", carry and _window(node) != 1)):
         node[k].setEnabled(on)
+    if node.knob("hint_ref") is not None:
+        node["hint_ref"].setEnabled(used is not None and node["hint_frames"].value() == HINT_FRAMES[2])
     node["use_hint"].setEnabled(h is not None)
     if node.knob("ko_soft") is not None:
         node["ko_soft"].setEnabled(node["keep_orig"].value())
@@ -380,7 +389,11 @@ def on_knob_changed():
                 _sync_range(node, src)
         if name in ("inputChange", "showPanel") and node.knob("out_dir") is not None:
             _sync_out_dir(node)  # al abrir el panel: el script pudo guardarse en otra carpeta
-        if name in ("inputChange", "use_hint", "no_carry", "temporal_window", "keep_orig"):
+        if name == "hint_frames" and node.knob("hint_ref") is not None and node[name].value() == HINT_FRAMES[2]:
+            first, last = int(node["first"].value()), int(node["last"].value())
+            if not first <= node["hint_ref"].value() <= last:  # un valor que ya estaba en el rango se respeta
+                node["hint_ref"].setValue(min(max(int(nuke.frame()), first), last))
+        if name in ("inputChange", "use_hint", "no_carry", "temporal_window", "keep_orig", "hint_frames"):
             refresh_state(node)
     except ValueError:  # el nodo se está destruyendo (se cierra o se limpia el script)
         pass
@@ -410,61 +423,109 @@ def _memory(node):
     return {MEMORY_ITEMS[1]: True, MEMORY_ITEMS[2]: "min"}.get(k.value(), False)
 
 
-class OutOfMemory(RuntimeError):
-    """CorridorKey se quedó sin memoria de GPU; .window = la ventana que eligió su modo automático, si la informó."""
-    window = None
+DEAD = ("El proceso de CorridorKey se cortó sin terminar (¿se reinició el PC o lo cerraron desde el Administrador "
+        "de tareas?). Vuelve a procesar.")
+_TIMER, _BUSY, _TICKS = [None], set(), [0]  # temporizador de la cola; nodos que espera el botón Procesar
 
 
-def run_infer(work, n, outputs, hint, quality, low_mem, window, out_name, hint_first=False, carry_quality=None,
-              no_carry=False):
-    """Lanza CorridorKey y espera con barra de progreso y botón Cancelar. Escribe en <work>/<out_name>."""
+def _spawn_runner(queue_path):
+    """Lanza cola.py fuera de Nuke (los tests lo reemplazan para correr la cola dentro del proceso)."""
     cfg = core.load_config()
-    in_dir, out_dir, log = os.path.join(work, "in"), os.path.join(work, out_name), os.path.join(work, "run.log")
-    tmp = os.path.join(core.home(), "tmp")
-    os.makedirs(tmp, exist_ok=True)
-    argv = core.build_argv(cfg, in_dir, out_dir, nuke.root()["fps"].value(), outputs, tmp,
-                           hint_dir=os.path.join(work, "hint") if hint else None, hint_quality=quality,
-                           low_mem=low_mem, window=window, hint_first=hint_first, carry_quality=carry_quality,
-                           no_carry=no_carry)
-    if os.path.isfile(log):
-        os.remove(log)
-    pid = core.spawn_detached(argv, work, log)
-    watch = core.output_dir(out_dir, in_dir, outputs[0])
+    return core.spawn_detached([cfg["python"], os.path.join(os.path.dirname(os.path.abspath(__file__)), "cola.py"),
+                                queue_path], os.path.dirname(queue_path), queue_path[:-5] + ".log")
+
+
+def _enqueue(jobs):
+    """Deja cada trabajo en su carpeta, los marca 'en cola' y lanza un proceso de fondo que los corre en serie.
+    Devuelve el PID del proceso."""
+    qdir = os.path.join(core.home(), "cola")
+    os.makedirs(qdir, exist_ok=True)
+    for f in os.listdir(qdir):  # los log de colas viejas (cada cola deja uno), con el mismo plazo que los temporales
+        p = os.path.join(qdir, f)
+        if f.endswith(".log") and os.path.getmtime(p) < time.time() - 14 * 86400:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    qpath = os.path.join(qdir, "cola_%d.json" % int(time.time() * 1000))
+    for j in jobs:
+        core.write_json(os.path.join(j["work"], core.JOB), j)
+        core.set_state(j["work"], "en cola")
+    core.write_json(qpath, jobs)
+    try:
+        pid = _spawn_runner(qpath)
+    except Exception as e:
+        for j in jobs:
+            core.set_state(j["work"], "error", msg=str(e))
+        raise
+    for j in jobs:
+        if core.get_state(j["work"]).get("estado") == "en cola":  # en los tests la cola ya corrió
+            core.set_state(j["work"], "en cola", runner=pid)
+    return pid
+
+
+def _stale(st):
+    """¿Dice estar en cola o procesando, pero su proceso ya no existe?"""
+    pid = st.get("pid") or st.get("runner")
+    return st.get("estado") in core.ACTIVE and (pid is None or not core.alive(pid))
+
+
+def _check_idle(node):
+    st = core.get_state(_dirs(node)[1])
+    if st.get("estado") in core.ACTIVE:
+        if not _stale(st):
+            raise RuntimeError("Este nodo ya está en la cola de CorridorKey (%s). Espera a que termine o usa "
+                               "CorridorKey > Cancelar cola." % st["estado"])
+        core.set_state(_dirs(node)[1], "error", msg=DEAD, visto=True)
+
+
+def _mark_seen(work, st):
+    """El error o la cancelación ya se mostró: el temporizador no vuelve a mirarlo."""
+    core.write_json(os.path.join(work, core.STATE), dict(st, visto=True))
+
+
+def _wait(node, job, pid):
+    """Botón Procesar: espera a la cola con barra de progreso y Cancelar, y publica."""
+    work, ticks = job["work"], 0
+    _BUSY.add(work)
     task = nuke.ProgressTask("CorridorKey")
-    ticks = 0
     try:
         while True:
-            text = core.read_log(log)
-            code = core.exit_code(text)
-            if code is not None:
+            st = core.get_state(work)
+            if st.get("estado") not in core.ACTIVE:
                 break
             ticks += 1
-            if ticks % 10 == 0 and not core.alive(pid):  # murió sin dejar su código de salida (lo mataron de afuera)
-                text = core.read_log(log)
-                code = core.exit_code(text)
-                if code is None:
-                    code = 1
+            if ticks % 10 == 0 and _stale(dict(st, runner=pid)):
+                st = core.get_state(work)  # pudo terminar justo entre las dos lecturas
+                if st.get("estado") in core.ACTIVE:
+                    core.set_state(work, "error", msg=DEAD)
+                    st = core.get_state(work)
                 break
             if task.isCancelled():
-                core.kill(pid)
+                for p in (st.get("pid"), pid):
+                    if p:
+                        core.kill(p)
+                core.set_state(work, "cancelado", visto=True)
                 raise RuntimeError("Cancelado por el usuario.")
-            frac, msg = core.progress(text, len(os.listdir(watch)) if os.path.isdir(watch) else 0, n)
+            frac, msg = core.job_progress(job, st)
             task.setProgress(int(frac * 100))
             task.setMessage(msg)
             time.sleep(1)
     finally:
         del task
-    if code != 0:
-        err = (OutOfMemory if core.is_oom(text) else RuntimeError)(
-            "CorridorKey falló:\n\n%s\n\nLog completo: %s" % (core.log_tail(text), log))
-        err.window = core.auto_window(text)
-        raise err
+        _BUSY.discard(work)
+    if st.get("estado") != "listo":
+        _mark_seen(work, st)
+        raise RuntimeError(st.get("msg") or "CorridorKey no terminó (%s)." % st.get("estado"))
+    return _finish(node, job, st)
 
 
-def attach_results(node, paths, first, last, src):
+def attach_results(node, paths, first, last, size):
     """Crea (o actualiza) dentro del Group un Read por salida del modelo y lo conecta a su Reformat (rf_<tipo>, que
     lo lleva al tamaño del clip y alimenta el despill y las vistas; ver create_node).
-    paths = {tipo: patrón con %04d}; los archivos llevan el número de frame del shot."""
+    paths = {tipo: patrón con %04d}; los archivos llevan el número de frame del shot. size = (ancho, alto, aspecto
+    de píxel) del clip."""
+    width, height, aspect = size
     with node:  # un solo nivel de contexto: los helpers no abren otro `with`
         for i, kind in enumerate(KINDS):
             r = nuke.toNode("r_" + kind) or nuke.nodes.Read(name="r_" + kind, xpos=120 * i, ypos=-300)
@@ -480,10 +541,10 @@ def attach_results(node, paths, first, last, src):
             rf.setInput(0, r)  # el Read se recrea en cada corrida (ver _detach)
             # al tamaño del clip; Node.format() de un Read devolvió el formato del script, no el del archivo
             rf["type"].setValue("to box")
-            rf["box_width"].setValue(src.width())
-            rf["box_height"].setValue(src.height())
+            rf["box_width"].setValue(width)
+            rf["box_height"].setValue(height)
             rf["box_fixed"].setValue(True)
-            rf["box_pixel_aspect"].setValue(src.pixelAspect())
+            rf["box_pixel_aspect"].setValue(aspect)
             rf["resize"].setValue("distort")
             try:
                 r["reload"].execute()
@@ -525,7 +586,9 @@ def _prune_outputs(work, base):
             core.safe_rmtree(os.path.join(work, d), base, ignore_errors=True)
 
 
-def _process(node, src, hint, force):
+def _prepare(node, src, hint, force):
+    """Lo que se hace en Nuke antes de procesar: rango, destino, disco, ventana y memoria, y la conversión del clip
+    y del hint (se reutiliza si nada cambió). Devuelve el trabajo para la cola (ver cola.run_job)."""
     _sync_range(node, src)  # si el rango del clip cambió y el usuario no lo tocó, se procesa el rango nuevo
     first, last = int(node["first"].value()), int(node["last"].value())
     n = last - first + 1
@@ -568,73 +631,224 @@ def _process(node, src, hint, force):
         core.safe_rmtree(in_dir, base)
         _render_plate(src, in_dir, first, last, scale)
         _stamp(in_dir, key)
-    hint_first = hint is not None and _val(node, "hint_frames", HINT_FRAMES[0]) == HINT_FRAMES[1]
+    mode = _val(node, "hint_frames", HINT_FRAMES[0]) if hint is not None else HINT_FRAMES[0]
+    hint_first = mode != HINT_FRAMES[0]  # primer frame o frame de referencia: el hint es un único frame
+    ref = int(node["hint_ref"].value()) if mode == HINT_FRAMES[2] else first
+    if not first <= ref <= last:
+        raise RuntimeError("El frame de referencia del hint (%d) está fuera del rango %d a %d." % (ref, first, last))
+    tramos = core.split_at(in_dir, work, base, ref - first) if ref > first else None
     if hint is not None:
-        hlast = first if hint_first else last  # con 'Solo el primer frame' se convierte un único frame
-        hkey = _fingerprint(hint, (first, hlast, "hint"))
-        if force or not _ready(hint_dir, hkey, hlast - first + 1):
+        hlast = ref if hint_first else last
+        hkey = _fingerprint(hint, (ref, hlast, "hint"))
+        if force or not _ready(hint_dir, hkey, hlast - ref + 1):
             core.safe_rmtree(hint_dir, base)
-            _render_hint(hint, hint_dir, first, hlast)
+            _render_hint(hint, hint_dir, ref, hlast)
             _stamp(hint_dir, hkey)
     else:
         core.safe_rmtree(hint_dir, base)  # que un hint viejo no se cuele
 
-    paths = {k: core.result_path(out_base, name, k, version) for k in KINDS}
-    t0, asked = time.time(), window
-    while True:  # si falta memoria de GPU, se reintenta con la ventana siguiente más chica (hasta frame a frame)
-        out_name = "out_" + time.strftime("%Y%m%d_%H%M%S")  # temporal: el resultado vive en la carpeta de salida
-        try:
-            run_infer(work, n, list(KINDS), hint is not None, node["hint_quality"].value(), low_mem, window, out_name,
-                      hint_first=hint_first, carry_quality=float(_val(node, "carry_quality", 0.95)),
-                      no_carry=bool(_val(node, "no_carry", False)))
-            break
-        except OutOfMemory as e:
-            failed = window or e.window or limit
-            window = core.smaller_window(failed)
-            if window is None:
-                raise
-            asked, low_mem = asked or failed, low_mem or True
-            time.sleep(1)  # el nombre de la carpeta lleva el segundo
-    jobs = [(core.output_dir(os.path.join(work, out_name), in_dir, k), paths[k]) for k in KINDS]
-    for d, _ in jobs:  # antes de tocar la versión publicada
-        if core.count_exr(d) != n:
-            raise RuntimeError("CorridorKey terminó pero escribió %d de %d frames en %s.\nNo se reemplazó nada. "
-                               "Log: %s" % (core.count_exr(d), n, d, os.path.join(work, "run.log")))
-    old = _detach(node)
+    hint_args = {} if hint is None else {
+        "hint_dir": hint_dir, "hint_quality": node["hint_quality"].value(), "hint_first": hint_first,
+        "carry_quality": float(_val(node, "carry_quality", 0.95)), "no_carry": bool(_val(node, "no_carry", False))}
+    return {"node": node.fullName(), "work": work, "base": base, "first": first, "last": last, "n": n,
+            "fps": nuke.root()["fps"].value(), "outputs": list(KINDS), "window": window, "low_mem": low_mem,
+            "limit": limit, "hint": hint_args, "tramos": tramos, "size": [src.width(), src.height(), src.pixelAspect()],
+            "paths": {k: core.result_path(out_base, name, k, version) for k in KINDS},
+            "res_label": res_label, "reused": reused, "name": name, "script": nuke.root().name(), "version": version, "out_base": out_base}
+
+
+def _finish(node, job, st):
+    """Publica lo que dejó la cola: verifica que estén todos los frames, mueve los EXR a la carpeta de salida y
+    conecta el resultado. Devuelve el texto del estado. Si algo falla, el trabajo queda en 'error' con el motivo."""
+    work, n, first = job["work"], job["n"], job["first"]
     try:
-        core.publish(jobs, first)
-    except Exception:
-        if old:
-            attach_results(node, old["paths"], old["first"], old["last"], src)
+        in_dir = os.path.join(work, "in")
+        jobs = [(core.output_dir(os.path.join(work, st["out_name"]), in_dir, k), job["paths"][k]) for k in KINDS]
+        for d, _ in jobs:  # antes de tocar la versión publicada
+            if core.count_exr(d) != n:
+                raise RuntimeError("CorridorKey terminó pero escribió %d de %d frames en %s.\nNo se reemplazó nada. "
+                                   "Log: %s" % (core.count_exr(d), n, d, os.path.join(work, "run.log")))
+        old = _detach(node)
+        try:
+            core.publish(jobs, first)
+        except Exception:
+            if old:
+                attach_results(node, old["paths"], old["first"], old["last"], job["size"])
+            raise
+    except Exception as e:
+        core.set_state(work, "error", msg=str(e))
         raise
-    attach_results(node, paths, first, last, src)
-    _prune_outputs(work, base)
+    attach_results(node, job["paths"], first, job["last"], job["size"])
+    _prune_outputs(work, job["base"])
+    out_base, window, asked = job["out_base"], st.get("ventana"), st.get("pedida")
     shown = out_base if len(out_base) <= 36 else "…" + out_base[-35:]  # el campo no ajusta líneas: en un panel angosto se corta
-    return "Última corrida %s (%d s): %d frames\n%s, %s\nVentana: %s\nSalida v%02d: %s" % (
-        time.strftime("%H:%M"), time.time() - t0, n, res_label,
-        "conversión reutilizada" if reused else "conversión nueva",
+    text = "Última corrida %s (%s): %d frames\n%s, %s\nVentana: %s\nSalida v%02d: %s" % (
+        time.strftime("%H:%M"), core.fmt_secs(st.get("segundos", 0)), n, job["res_label"],
+        "conversión reutilizada" if job["reused"] else "conversión nueva",
         ("auto" if window is None else "frame a frame" if window == 1 else "%d frames" % window)
-        + (" (bajó de %d por memoria)" % asked if asked and asked != window else ""), version, shown)
+        + (" (bajó de %d por memoria)" % asked if asked and asked != window else ""), job["version"], shown)
+    core.set_state(work, "publicado", visto=True, segundos=st.get("segundos"))  # el panel de la cola muestra el tiempo
+    _label(node, "")
+    return text
+
+
+def _gpu_ok():
+    """Avisa si la GPU tiene poca memoria libre; False si el usuario decide no seguir."""
+    gpu = core.gpu_info()
+    # 6000 MiB libres, o el 60 % en tarjetas chicas (una de 6 GB nunca tiene 6000 libres)
+    if gpu and gpu[2] < min(6000, 0.6 * gpu[1]):
+        procs = "\n".join("   %s: %d MiB" % p for p in core.gpu_processes())
+        return nuke.ask("La GPU tiene solo %d MiB libres (%s).\n%sCierra lo que puedas o CorridorKey irá más lento o "
+                        "fallará.\n\n¿Continuar igual?" % (gpu[2], gpu[0], "La ocupan:\n%s\n\n" % procs if procs else ""))
+    return True
 
 
 def run(node=None, force=False):
-    """Botón Procesar del nodo."""
+    """Botón Procesar del nodo: pasa por la misma cola que 'Procesar seleccionados', pero espera con barra de progreso."""
     node = node or nuke.thisNode()
     src, hint = node.input(0), _hint_in(node)
     if src is None:
         nuke.message("Conecta el clip a la entrada 'clip' de este nodo (sin Reformat: la reducción a HD la hace el nodo).")
         return
-    gpu = core.gpu_info()
-    # 6000 MiB libres, o el 60 % en tarjetas chicas (una de 6 GB nunca tiene 6000 libres)
-    if gpu and gpu[2] < min(6000, 0.6 * gpu[1]):
-        procs = "\n".join("   %s: %d MiB" % p for p in core.gpu_processes())
-        if not nuke.ask("La GPU tiene solo %d MiB libres (%s).\n%sCierra lo que puedas o CorridorKey irá más lento o "
-                        "fallará.\n\n¿Continuar igual?" % (gpu[2], gpu[0], "La ocupan:\n%s\n\n" % procs if procs else "")):
-            return
+    if not _gpu_ok():
+        return
     try:
-        _set_status(node, _process(node, src, hint, force))
+        _check_idle(node)
+        job = _prepare(node, src, hint, force)
+        _set_status(node, _wait(node, job, _enqueue([job])))
     except Exception as e:  # el usuario necesita ver el motivo, no un traceback de Nuke
         nuke.message("CorridorKey no pudo terminar.\n\n%s" % e)
+
+
+def process_selected():
+    """Menú Procesar seleccionados: convierte el clip y el hint de cada nodo y los manda a una cola de fondo que los
+    procesa uno tras otro. Nuke queda libre, y la cola sigue aunque se cierre Nuke (al reabrir el script se publica
+    lo que terminó)."""
+    nodes = sorted((n for n in nuke.selectedNodes() if n.knob("ck_tab")), key=lambda n: (n.xpos(), n.ypos()))
+    if not nodes:
+        nuke.message("Selecciona uno o más nodos CorridorKey.")
+        return
+    if not _gpu_ok():
+        return
+    jobs, problems = [], []
+    for node in nodes:
+        if node.input(0) is None:
+            problems.append("%s: no tiene clip conectado." % node.name())
+            continue
+        try:
+            _check_idle(node)
+            jobs.append(_prepare(node, node.input(0), _hint_in(node), False))
+        except Exception as e:
+            problems.append("%s: %s" % (node.name(), e))
+    if jobs:
+        try:
+            _enqueue(jobs)
+        except Exception as e:
+            nuke.message("No se pudo lanzar la cola.\n\n%s" % e)
+            return
+        for j in jobs:
+            n = nuke.toNode(j["node"])
+            _set_status(n, "En cola", AMBER)
+            _label(n, "en cola")
+        _start_timer()
+    msg = "En cola: %d nodo(s). Se procesan uno tras otro; puedes seguir trabajando." % len(jobs) if jobs else ""
+    if problems:
+        msg += "\n\nNo se encolaron:\n" + "\n".join(problems)
+    nuke.message(msg.strip())
+
+
+def cancel_queue():
+    """Menú Cancelar cola: detiene el proceso de fondo de los nodos de este script y lo que esperaba su turno."""
+    stopped = []
+    for node in _ck_nodes():
+        work = _dirs(node)[1]
+        st = core.get_state(work)
+        if st.get("estado") in core.ACTIVE:
+            for p in (st.get("pid"), st.get("runner")):
+                if p:
+                    core.kill(p)
+            core.set_state(work, "cancelado")
+            stopped.append(node.name())
+    _tick()
+    nuke.message("Cancelados: %s." % ", ".join(stopped) if stopped else "No hay nodos de este script en la cola.")
+
+
+def _ck_nodes():
+    return [n for n in nuke.allNodes("Group", recurseGroups=True) if n.knob("ck_tab")]
+
+
+def _label(node, text):
+    """Estado de la cola bajo el nombre del nodo, en el grafo (solo si el usuario no cambió el label)."""
+    if node["label"].value().startswith("[value resolution]"):
+        node["label"].setValue("[value resolution]" + ("\n" + text if text else ""))
+
+
+def _tick():
+    """Temporizador de la cola: muestra el estado de cada nodo y publica los que terminaron. Se apaga solo cuando
+    no queda nada pendiente en este script.
+    shortcut: el trabajo se encuentra por el nombre del nodo; si se renombra mientras está en cola, no se publica solo."""
+    _TICKS[0] += 1
+    pending = False
+    for node in _ck_nodes():
+        try:
+            work = _dirs(node)[1]
+            st = core.get_state(work)
+            state = st.get("estado")
+            if work in _BUSY:  # lo espera el botón Procesar
+                pending = True
+            elif not state or st.get("visto"):
+                continue
+            elif state in core.ACTIVE:
+                pending = True
+                if _TICKS[0] % 15 == 0 and _stale(st):  # cada ~30 s: tasklist es lento para cada vuelta
+                    core.set_state(work, "error", msg=DEAD)
+                    continue
+                job = core.read_json(os.path.join(work, core.JOB))
+                frac, msg = core.job_progress(job, st) if job else (0.0, "")
+                if state == "en cola":
+                    _set_status(node, "En cola", AMBER)
+                    _label(node, "en cola")
+                else:
+                    _set_status(node, "Procesando %d %%\n%s" % (frac * 100, msg), AMBER)
+                    _label(node, "procesando %d %%" % (frac * 100))
+            elif state == "listo":
+                pending = True  # si falla al publicar, la vuelta siguiente muestra el error
+                _set_status(node, _finish(node, core.read_json(os.path.join(work, core.JOB)), st))
+            else:  # error o cancelado
+                _set_status(node, "Cancelado" if state == "cancelado" else
+                            "Falló:\n" + core.log_tail(st.get("msg", ""), 6), RED)
+                _label(node, state)
+                _mark_seen(work, st)
+        except Exception:
+            traceback.print_exc()
+    if not pending and _TIMER[0] is not None:
+        _TIMER[0].stop()
+
+
+def _start_timer():
+    """En la GUI revisa la cola cada 2 s (en headless no hay bucle de eventos: los tests llaman a _tick)."""
+    if not nuke.GUI:
+        return
+    if _TIMER[0] is None:
+        try:
+            from PySide6 import QtCore
+        except ImportError:  # Nuke 15
+            from PySide2 import QtCore
+        _TIMER[0] = QtCore.QTimer()
+        _TIMER[0].setInterval(2000)
+        _TIMER[0].timeout.connect(_tick)
+    if not _TIMER[0].isActive():
+        _TIMER[0].start()
+
+
+def resume():
+    """Al abrir un script: si algún nodo tiene algo en la cola o un resultado sin publicar, retoma el temporizador."""
+    try:
+        if any(not st.get("visto") for st in (core.get_state(_dirs(n)[1]) for n in _ck_nodes()) if st):
+            _tick()
+            _start_timer()
+    except Exception:
+        traceback.print_exc()
 
 
 def reconvert(node=None):
@@ -643,6 +857,11 @@ def reconvert(node=None):
 
 def clean_inputs(node=None):
     node = node or nuke.thisNode()
+    try:
+        _check_idle(node)  # la cola lee de estas carpetas
+    except RuntimeError as e:
+        nuke.message(str(e))
+        return
     base, work = _dirs(node)
     for d in ("in", "hint"):
         core.safe_rmtree(os.path.join(work, d), base)
@@ -711,6 +930,7 @@ def _add_knobs(g):
     add(nuke.Boolean_Knob("use_hint", "usar hint"), TIPS["use_hint"]).setFlag(nuke.STARTLINE)
     g["use_hint"].setValue(True)
     add(nuke.Enumeration_Knob("hint_frames", "hint en", HINT_FRAMES), TIPS["hint_frames"])
+    add(nuke.Int_Knob("hint_ref", "frame"), TIPS["hint_ref"]).clearFlag(nuke.STARTLINE)
     add(nuke.Double_Knob("hint_quality", "calidad del hint"), TIPS["hint_quality"])
     g["hint_quality"].setRange(0, 1)
     g["hint_quality"].setValue(0.75)
@@ -734,9 +954,9 @@ def _add_knobs(g):
     add(nuke.Text_Knob("status", "estado", "sin procesar"), TIPS["status"])
     add(nuke.Text_Knob("ck_div2", ""))
 
-    section("sec_post", "3 · ajustar", "En vivo: cambiar algo de esta sección se ve al instante y no vuelve a procesar.")
+    section("sec_post", "3 · ajustes de color","En vivo: cambiar algo de esta sección se ve al instante y no vuelve a procesar.")
     add(nuke.Enumeration_Knob("output", "ver", OUTPUT_ITEMS), TIPS["output"])
-    add(nuke.Enumeration_Knob("despill_color", "pantalla", SCREEN_ITEMS), TIPS["despill_color"])
+    add(nuke.Enumeration_Knob("despill_color", "color croma", SCREEN_ITEMS), TIPS["despill_color"])
     add(nuke.Enumeration_Knob("despill_mode", "despill", DESPILL_ITEMS), TIPS["despill_mode"])
     add(nuke.Double_Knob("despill", "fuerza"), TIPS["despill"])
     g["despill"].setRange(0, 1)

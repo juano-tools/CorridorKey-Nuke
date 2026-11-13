@@ -37,11 +37,17 @@ Desde la 0.7.0, la casilla "plate original en el interior" viene marcada.
 
 Desde la 0.7.1, el nodo trae "suavidad" en "plate original en el interior" y las layers `ck_fg` y `ck_fg_raw`. Un nodo hecho con la 0.7.0 sigue funcionando, pero sin eso: créalo de nuevo para tenerlas.
 
+Desde la 0.8.0 está la cola: CorridorKey > Procesar seleccionados. Funciona también con los nodos que ya tienes.
+
 ## Cómo se usa
 
 1. Tab > CorridorKey, o en el menú CorridorKey > Crear nodo CorridorKey. Si tenías un nodo seleccionado, se conecta solo.
 2. Conecta el plate a la entrada `clip`. Si tienes un matte del sujeto, conéctalo a `hint`; usa su alpha. El hint es opcional.
 3. Elige la resolución y dale a ▶ Procesar. Puedes cancelar desde la barra de progreso.
+
+Para varios shots, selecciona sus nodos CorridorKey y usa **CorridorKey > Procesar seleccionados**. Nuke convierte los plates (unos segundos por shot), los manda a una cola en segundo plano y queda libre para seguir trabajando. La cola procesa los shots de a uno. Cada nodo muestra bajo su nombre si está en cola o procesando, y al terminar conecta su resultado solo. La cola sigue aunque cierres Nuke: al reabrir el script se publica lo que terminó. **CorridorKey > Cancelar cola** la detiene.
+
+**CorridorKey > Ver cola** abre un panel con la cola de todos los scripts: el shot que se procesa, con su avance y su tiempo, los que esperan y los terminados de las últimas 24 horas. Desde ahí puedes ir al nodo (si está en el script abierto), abrir el log o cancelar un solo shot sin detener los demás. El panel también queda en Windows > Custom para acoplarlo donde quieras.
 
 > **Ojo con las pantallas azules y las pantallas detrás de un set.** Sin hint, CorridorKey elige solo el sujeto, casi siempre las personas, y puede recortar también el set: paredes, marcos de ventana, muebles. En esos shots conecta siempre un hint con 0 en la pantalla y 1 en todo lo que se queda. Basta un keyer rápido (Keylight, IBK) con un poco de blur, pero tiene que estar limpio en la pantalla: si el hint queda gris o con ruido ahí, el alpha sale igual. Más detalles en Hint.
 
@@ -56,7 +62,7 @@ El panel sigue el orden en que se trabaja:
 
 - 1 · entrada: resolución, rango y hint.
 - 2 · salida: carpeta, nombre y versión de los EXR.
-- 3 · ajustar: vista, despill y plate original. Todo en vivo.
+- 3 · ajustes de color: vista, despill y plate original. Todo en vivo.
 - avanzado y mantenimiento vienen cerrados. Normalmente no hay que tocarlos.
 
 Cada control tiene su ayuda si dejas el mouse encima.
@@ -75,7 +81,7 @@ Un plate más chico que la resolución elegida no se agranda.
 ### Hint
 
 - "usar hint" sirve para probar sin hint sin desconectar el nodo.
-- "hint en": todos los frames o solo el primero. Con el primer frame el modelo sigue al sujeto por su cuenta, y en tomas largas o con oclusiones se puede perder.
+- "hint en": todos los frames, solo el primero o un frame de referencia. Con un solo frame el modelo sigue al sujeto por su cuenta, y en tomas largas o con oclusiones se puede perder. Con "Un frame de referencia" eliges en "frame" el frame donde el hint está más limpio. CorridorKey solo acepta el hint en el primer frame, así que el nodo procesa dos tramos desde ese frame, uno hacia adelante y otro con el clip invertido, y los junta. Tarda casi lo mismo. El tramo invertido parte un frame después de la referencia y toma como hint el resultado del otro tramo: así el frame de referencia sale igual que sus vecinos y no salta.
 - "calidad del hint": 0,95 para un roto de artista, 0,75 para un matte automático o un key rápido, 0,5 o menos si es aproximado.
 - "calidad interna" y "hint sin arrastre" controlan cuánto se apoya el modelo en lo que arrastra de un tramo de frames al siguiente. Déjalos como están salvo que el key derive.
 
@@ -85,7 +91,7 @@ Sin hint, el modelo decide solo cuál es el sujeto, y casi siempre elige a las p
 
 El despill no lo hace el modelo: es una regla que se aplica al fg después. Por eso aquí es en vivo.
 
-- "pantalla": verde o azul. El modelo separa bien la pantalla azul. Si en un shot azul el set desaparece, falta el hint (ver Hint), no es por el color.
+- "color croma": verde o azul. El modelo separa bien la pantalla azul. Si en un shot azul el set desaparece, falta el hint (ver Hint), no es por el color.
 - Average es la regla de CorridorKey. Máximo es más suave y respeta mejor los amarillos y la piel. Ninguno deja el fg crudo.
 - "fuerza" va de 0 a 1. CorridorKey usa 0,5.
 - Si el fg ya viene limpio, el despill casi no cambia nada.
@@ -134,7 +140,8 @@ Los temporales quedan en tu PC, en `%LOCALAPPDATA%\CorridorKey\runs`, nunca en e
 ## Otras cosas
 
 - El plate se manda en el espacio de trabajo del script (ACEScg, por ejemplo), sin convertir. CorridorKey no maneja espacios de color y su README recomienda convertir ACEScg, Rec.2020 o log a lineal antes. En nuestras pruebas, ACEScg dio lo mismo que Rec.709 lineal, también con pantalla azul.
-- Mientras procesa, Nuke queda bloqueado con la barra de progreso.
+- Con ▶ Procesar, Nuke espera con la barra de progreso. Con Procesar seleccionados queda libre.
+- Si un nodo está en la cola, no se puede volver a procesar ni borrar sus temporales hasta que termine o canceles la cola.
 - Si abres el script en una PC sin el plugin, el nodo se ve pero los botones no hacen nada.
 
 ## Si algo falla

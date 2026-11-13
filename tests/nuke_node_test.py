@@ -20,13 +20,13 @@ else:  # el plugin tal como está en el repo
     if os.environ.get("CK_TEST_FAKE") == "1":  # sin infer.py real no hace falta la instalación: temporales en la carpeta de prueba
         os.environ["CORRIDORKEY_HOME"] = os.path.join(WORK, "home")
 import corridorkey_nuke  # noqa: E402
-from corridorkey_nuke import core, ui  # noqa: E402
+from corridorkey_nuke import cola, core, ui  # noqa: E402
 
 MSGS, ASKS, ANSWER = [], [], [True]
 nuke.message = lambda m: (MSGS.append(m), print("MESSAGE:", m))  # en headless no hay diálogos
 # ASKS guarda solo las confirmaciones de ventana; el aviso de poca VRAM libre (depende de la GPU del momento) se acepta
 nuke.ask = lambda m: True if "GPU tiene solo" in m else (ASKS.append(m), ANSWER[0])[1]
-CALL = {}  # argumentos de la última llamada a run_infer (modo FAKE)
+CALL = {}  # lo que pidió la cola en la última llamada a infer.py (modo FAKE)
 FIRST, LAST = 1001, 1008
 
 # CK_TEST_FAKE=1: sin GPU. infer.py se reemplaza por EXR de color conocido (0.1 en la corrida 1, 0.2 en la 2...), así se
@@ -38,11 +38,31 @@ RUNS = [0]
 FG_COLOR = (0.2, 0.6, 0.4)  # el fg falso: verde dominante y r != b, para distinguir los despills
 
 
-def fake_infer(work, n, outputs, hint, quality, low_mem, window, out_name, **extra):
-    """alpha = gris de valor 0.1 * nº de corrida; fg = FG_COLOR."""
+FAKE_CFG = {"python": "python.exe", "infer": os.path.join(WORK, "infer.py"), "ffmpeg": "ffmpeg.exe"}
+OOM = [0]  # cuántas corridas seguidas fallan por falta de memoria de GPU
+
+
+def _arg(argv, flag):
+    return argv[argv.index(flag) + 1] if flag in argv else None
+
+
+def fake_infer(argv, log, cwd):
+    """infer.py falso, con los argumentos que arma la cola: alpha = gris de valor 0.1 * nº de corrida; fg = FG_COLOR.
+    Anota en CALL lo que se pidió."""
+    window, carry = _arg(argv, "--hann_chunk"), _arg(argv, "--carry_hint_quality")
+    CALL.clear()
+    CALL.update(window=int(window) if window else None, outputs=argv[argv.index("--outputs") + 1:argv.index("--despill_strength")],
+                low_mem=("min" if "--low_vram_foundation_chunk" in argv else True) if "--low_vram" in argv else False,
+                hint="--hint_video" in argv or "--hint_first_frame" in argv, hint_first="--hint_first_frame" in argv,
+                no_carry="--no_carry_hint" in argv, carry_quality=float(carry) if carry else None)
+    if OOM[0]:
+        OOM[0] -= 1
+        with open(log, "w") as f:
+            f.write("torch.OutOfMemoryError: CUDA out of memory (simulado)\n")
+        return 1
     RUNS[0] += 1
-    CALL.update(low_mem=low_mem, window=window, outputs=list(outputs), hint=hint, **extra)
-    in_dir, out_dir = os.path.join(work, "in"), os.path.join(work, out_name)
+    in_dir, out_dir, outputs = _arg(argv, "--input"), _arg(argv, "--output_dir"), CALL["outputs"]
+    n = len([f for f in os.listdir(in_dir) if f.endswith(".exr")])
     for kind in outputs:
         c = nuke.nodes.Constant()
         c["color"].setValue([RUNS[0] * 0.1] * 4 if kind == "alpha" else list(FG_COLOR) + [1])
@@ -55,6 +75,15 @@ def fake_infer(work, n, outputs, hint, quality, low_mem, window, out_name, **ext
         nuke.execute(w, 0, n - 1, 1)
         nuke.delete(w)
         nuke.delete(c)
+    with open(log, "w") as f:
+        f.write("window 1/1\n")
+    return 0
+
+
+def fake_spawn(queue_path):
+    """En vez del proceso de fondo, la cola corre aquí mismo y termina antes de volver."""
+    cola.run_queue(queue_path, infer=fake_infer, cfg=FAKE_CFG)
+    return 0
 
 
 def expect_pixels(node):
@@ -66,7 +95,7 @@ def expect_pixels(node):
 
 
 if FAKE:
-    ui.run_infer = fake_infer
+    ui._spawn_runner = fake_spawn
 print("plugin", corridorkey_nuke.__version__, "desde", os.path.dirname(corridorkey_nuke.__file__))
 
 root = nuke.root()
@@ -385,6 +414,27 @@ pngs = [f for f in os.listdir(os.path.join(work, "hint")) if f.endswith(".png")]
 assert pngs == ["hint.%d.png" % FIRST], "con 'Solo el primer frame' debía convertir un único frame: %s" % pngs
 if FAKE:
     assert CALL["hint_first"] is True and CALL["no_carry"] is True and CALL["low_mem"] is True, CALL
+g["hint_frames"].setValue(ui.HINT_FRAMES[2])  # frame de referencia: dos tramos desde 1004 que se juntan
+g["hint_ref"].setValue(FIRST - 1)
+ui.refresh_state(g)
+assert g["hint_ref"].enabled(), "con 'Un frame de referencia' el frame debía quedar activo"
+ui.run(g)
+assert "fuera del rango" in MSGS[-1], "un frame de referencia fuera del rango debía avisar: %s" % MSGS[-1:]
+g["hint_ref"].setValue(1004)
+ui.run(g)
+pngs = [f for f in os.listdir(os.path.join(work, "hint")) if f.endswith(".png")]
+assert pngs == ["hint.1004.png"], "con frame de referencia debía convertir solo ese frame: %s" % pngs
+if FAKE:  # el tramo hacia adelante corre primero (gris de la corrida anterior) y el de atrás después
+    with g:
+        got = [round(nuke.toNode("r_alpha").sample("red", 5, 5, frame=f), 2) for f in range(FIRST, LAST + 1)]
+    fwd, bwd = round((RUNS[0] - 1) * 0.1, 2), round(RUNS[0] * 0.1, 2)
+    # relevo: el tramo de atrás parte en 1005 y entrega 1004 (propagado); de cada tramo se descarta su frame con hint
+    assert got == [bwd] * (1004 - FIRST + 1) + [fwd] * (LAST - 1004), "tramos mal juntados: %s" % got
+    assert CALL["hint_first"] is True, CALL
+    print("   ok frame de referencia 1004:", got)
+g["hint_frames"].setValue(ui.HINT_FRAMES[1])
+ui.refresh_state(g)
+assert not g["hint_ref"].enabled(), "sin 'Un frame de referencia' el frame debía quedar en gris"
 g["temporal_window"].setValue(ui.WINDOW_ITEMS[1])  # frame a frame: no hay arrastre entre ventanas
 g["no_carry"].setValue(False)
 ui.refresh_state(g)
@@ -393,19 +443,11 @@ g["temporal_window"].setValue(ui.WINDOW_ITEMS[0])
 g["hint_frames"].setValue(ui.HINT_FRAMES[0])
 g["gpu_memory"].setValue(ui.MEMORY_ITEMS[0])
 if FAKE:  # sin memoria: reintenta con la ventana siguiente más chica y lo dice en el estado
-    real_fake, fails = ui.run_infer, [2]
-
-    def oom_infer(*a, **k):
-        if fails[0]:
-            fails[0] -= 1
-            raise ui.OutOfMemory("CUDA out of memory (simulado)")
-        return real_fake(*a, **k)
-    ui.run_infer = oom_infer
+    OOM[0] = 2
     g["temporal_window"].setValue("16")
     ANSWER[0] = True
     ui.run(g)
-    ui.run_infer = real_fake
-    assert CALL["window"] == 4 and CALL["low_mem"], "tras dos fallos de memoria con 16 debía terminar en 4: %s" % CALL
+    assert OOM[0] == 0 and CALL["window"] == 4 and CALL["low_mem"], "tras dos fallos de memoria con 16 debía terminar en 4: %s" % CALL
     assert "bajó de 16 por memoria" in g["status"].value(), g["status"].value()
     g["temporal_window"].setValue(ui.WINDOW_ITEMS[0])
     print("   ok reintento por memoria:", g["status"].value().split("<br>")[2])
@@ -445,6 +487,33 @@ if FAKE:  # el alpha falso (0.1 * nº de corrida) nunca es sólido: se fuerza la
     expect_rgb("layer ck_fg premult = cutout", tuple(v * min(fg_l[3], 1) for v in fg_l[:3]), rgb(g))
     assert abs(fg_l[3] - raw_l[3]) < 1e-4 and abs(fg_l[3] - g.sample("alpha", 5, 5, frame=1004)) < 1e-4, (fg_l, raw_l)
     print("   ok layers: alpha", round(fg_l[3], 3))
+
+if FAKE:  # 5b) la cola: Procesar seleccionados no bloquea; el temporizador publica; un nodo en cola no se reprocesa
+    step("5b. cola")
+    qwork = ui._dirs(g)[1]
+    for n in nuke.allNodes():
+        n.setSelected(n is g)
+    before = RUNS[0]
+    ui.process_selected()
+    assert MSGS[-1].startswith("En cola: 1"), MSGS[-1]
+    assert core.get_state(qwork)["estado"] == "listo" and RUNS[0] == before + 1, core.get_state(qwork)
+    ui._tick()  # en la GUI lo llama el temporizador
+    assert core.get_state(qwork)["estado"] == "publicado", core.get_state(qwork)
+    assert "Última corrida" in g["status"].value() and g["label"].value() == "[value resolution]", g["label"].value()
+    expect_pixels(g)
+    print("   ok Procesar seleccionados + temporizador:", g["status"].value().split("<br>")[0])
+    import subprocess
+    dummy = subprocess.Popen(["ping", "-n", "60", "127.0.0.1"], stdout=subprocess.DEVNULL)  # hace de proceso de fondo vivo
+    core.set_state(qwork, "procesando", pid=dummy.pid, out_name="out_x")
+    ui.run(g)
+    assert "ya está en la cola" in MSGS[-1] and RUNS[0] == before + 1, MSGS[-1]
+    ui.cancel_queue()
+    assert dummy.wait(timeout=20) is not None and core.get_state(qwork).get("estado") == "cancelado"
+    assert "Cancelado" in g["status"].value() and core.get_state(qwork).get("visto"), g["status"].value()
+    core.set_state(qwork, "procesando", pid=dummy.pid, out_name="out_x")  # su proceso ya no existe
+    ui._check_idle(g)  # no debe quejarse: lo marca como cortado
+    assert core.get_state(qwork)["estado"] == "error", core.get_state(qwork)
+    print("   ok nodo ocupado, Cancelar cola y proceso cortado")
 
 # 6) guardar, reabrir y comprobar que el nodo y sus resultados sobreviven; borrar temporales
 step("6. guardar y reabrir")

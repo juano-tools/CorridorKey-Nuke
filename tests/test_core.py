@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """Autoprueba de core.py (sin Nuke): python tests\\test_core.py"""
 import os
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "nuke"))
-from corridorkey_nuke import core  # noqa: E402
+from corridorkey_nuke import cola, core  # noqa: E402
 
 CFG = {"python": r"C:\x y\python.exe", "infer": r"C:\x y\infer.py", "ffmpeg": r"C:\x y\ffmpeg.exe"}
 
@@ -296,6 +297,182 @@ class Publicar(unittest.TestCase):
             self.assertEqual([self._leer(b, 1001), self._leer(b, 1002)], ["viejoB0", "viejoB1"])
             core.publish(origenes("nuevo"), 1001)  # soltado: ahora sí
             self.assertEqual([self._leer(a, 1002), self._leer(b, 1002)], ["nuevoA1", "nuevoB1"])
+
+
+class Cola(unittest.TestCase):
+    """cola.py sin GPU: un infer.py falso que escribe la carpeta de salida o simula falta de memoria."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = self.tmp.name
+        os.environ[core.HOME_ENV] = self.home
+        self.calls = []
+
+    def tearDown(self):
+        os.environ.pop(core.HOME_ENV, None)
+        self.tmp.cleanup()
+
+    def job(self, name, window=None):
+        work = os.path.join(self.home, name)
+        os.makedirs(os.path.join(work, "in"))
+        return {"work": work, "n": 3, "fps": 24, "outputs": ["alpha"], "window": window, "low_mem": False,
+                "limit": 24, "hint": {}}
+
+    def infer(self, results):
+        """results = por llamada: "ok", "oom", "falla" o "excepción"."""
+        def f(argv, log, cwd):
+            self.calls.append(argv)
+            r = results.pop(0)
+            if r == "excepción":
+                raise ValueError("se rompió")
+            with open(log, "w") as fh:
+                fh.write({"ok": "window 1/1", "oom": "torch.OutOfMemoryError: CUDA out of memory", "falla": "boom"}[r])
+            if r == "ok":
+                os.makedirs(core.output_dir(argv[argv.index("--output_dir") + 1], argv[argv.index("--input") + 1], "alpha"))
+                return 0
+            return 1
+        return f
+
+    def run_queue(self, jobs, results):
+        q = os.path.join(self.home, "cola", "cola_1.json")
+        os.makedirs(os.path.dirname(q), exist_ok=True)
+        core.write_json(q, jobs)
+        cola.run_queue(q, infer=self.infer(results), cfg=CFG)
+        self.assertFalse(os.path.exists(q), "la cola no borró su lista")
+        self.assertFalse(os.path.exists(os.path.join(self.home, "cola", "cola.lock")), "la cola no soltó el turno")
+
+    def test_en_serie_con_reintento_por_memoria(self):
+        a, b = self.job("a", window=16), self.job("b")
+        self.run_queue([a, b], ["oom", "oom", "ok", "ok"])
+        sa, sb = core.get_state(a["work"]), core.get_state(b["work"])
+        self.assertEqual((sa["estado"], sa["ventana"], sa["pedida"]), ("listo", 4, 16))
+        self.assertTrue(os.path.isdir(os.path.join(a["work"], sa["out_name"])))
+        self.assertIn("--low_vram", self.calls[2])  # al bajar la ventana por memoria se pide memoria baja
+        self.assertEqual((sb["estado"], sb["ventana"], sb["pedida"]), ("listo", None, None))
+
+    def test_errores_no_frenan_la_cola(self):
+        a, b, c, d = self.job("a", window=1), self.job("b"), self.job("c"), self.job("d")
+        core.set_state(b["work"], "cancelado")  # cancelado mientras esperaba: no se corre
+        self.run_queue([a, b, c, d], ["oom", "excepción", "falla"])
+        sa, sc, sd = (core.get_state(j["work"]) for j in (a, c, d))
+        self.assertEqual((sa["estado"], sa["oom"]), ("error", True))  # frame a frame y sin memoria: no hay más abajo
+        self.assertEqual(core.get_state(b["work"])["estado"], "cancelado")
+        self.assertEqual(sc["estado"], "error")
+        self.assertIn("se rompió", sc["msg"])
+        self.assertEqual((sd["estado"], sd["oom"]), ("error", False))
+        self.assertIn("boom", sd["msg"])
+        self.assertEqual(len(self.calls), 3)
+
+    def test_turno_abandonado(self):
+        os.makedirs(os.path.join(self.home, "cola"))
+        p = subprocess.Popen(["cmd.exe", "/c", "exit"] if os.name == "nt" else ["true"])
+        p.wait()
+        with open(os.path.join(self.home, "cola", "cola.lock"), "w") as f:
+            f.write(str(p.pid))  # la cola anterior murió sin soltar el turno
+        a = self.job("a")
+        self.run_queue([a], ["ok"])
+        self.assertEqual(core.get_state(a["work"])["estado"], "listo")
+
+    def test_frame_de_referencia_en_tramos(self):
+        """Hint en el frame 3 de 5: un tramo hacia adelante (3..5) y otro invertido (4..1) con el alpha del primero como
+        hint; al juntarlos, de cada tramo se descarta su frame con hint."""
+        a = self.job("a")
+        in_dir = os.path.join(a["work"], "in")
+        for f in range(1001, 1006):
+            with open(os.path.join(in_dir, "plate.%d.exr" % f), "w") as fh:
+                fh.write(str(f))
+        a["tramos"] = core.split_at(in_dir, a["work"], self.home, 2)
+        self.assertEqual([(os.path.basename(t["in"]), t["frames"]) for t in a["tramos"]],
+                         [("adelante", [2, 3, 4]), ("atras", [3, 2, 1, 0])])
+        hints = []
+
+        def infer(argv, log, cwd):  # copia cada frame de entrada con el nombre del tramo, para ver de dónde salió
+            src, out = argv[argv.index("--input") + 1], argv[argv.index("--output_dir") + 1]
+            if "--hint_first_frame" in argv:
+                h = argv.index("--hint_first_frame")
+                with open(argv[h + 1]) as fh:
+                    hints.append((fh.read(), argv[h + 3]))
+            d = core.output_dir(out, src, "alpha")
+            os.makedirs(d)
+            for i, f in enumerate(sorted(os.listdir(src))):
+                with open(os.path.join(src, f)) as fh, open(os.path.join(d, "a_%06d.exr" % i), "w") as w:
+                    w.write(fh.read() + os.path.basename(src))
+            open(log, "w").close()
+            return 0
+        q = os.path.join(self.home, "cola", "cola_1.json")
+        os.makedirs(os.path.dirname(q))
+        core.write_json(q, [a])
+        cola.run_queue(q, infer=infer, cfg=CFG)
+        st = core.get_state(a["work"])
+        self.assertEqual(st["estado"], "listo", st)
+        d = core.output_dir(os.path.join(a["work"], st["out_name"]), in_dir, "alpha")
+        got = []
+        for f in sorted(os.listdir(d)):
+            with open(os.path.join(d, f)) as fh:
+                got.append(fh.read())
+        self.assertEqual(got, ["1001atras", "1002atras", "1003atras", "1004adelante", "1005adelante"])
+        self.assertEqual(hints, [("1004adelante", "0.95")])  # el relevo: alpha del tramo hacia adelante en 1004
+        self.assertEqual([len(t["frames"]) for t in core.split_at(in_dir, a["work"], self.home, 4)], [5])  # al final: solo hacia atrás
+
+    def test_cancelar_un_shot_no_corta_la_cola(self):
+        a, b = self.job("a"), self.job("b")
+
+        def infer(argv, log, cwd):  # mientras corre el primero, el panel lo cancela (sin infer.pid: no hay que matar)
+            self.calls.append(argv)
+            if len(self.calls) == 1:
+                self.assertTrue(core.cancel_job(a["work"]))
+                open(log, "w").close()
+                return 1
+            os.makedirs(core.output_dir(argv[argv.index("--output_dir") + 1], argv[argv.index("--input") + 1], "alpha"))
+            open(log, "w").close()
+            return 0
+        q = os.path.join(self.home, "cola", "cola_1.json")
+        os.makedirs(os.path.dirname(q))
+        core.write_json(q, [a, b])
+        cola.run_queue(q, infer=infer, cfg=CFG)
+        self.assertEqual(core.get_state(a["work"])["estado"], "cancelado")  # no se volvió error ni reintento
+        self.assertEqual(core.get_state(b["work"])["estado"], "listo")
+        self.assertEqual(len(self.calls), 2)
+        self.assertFalse(core.cancel_job(b["work"]), "un trabajo terminado no se cancela")
+
+    def test_filas_del_panel(self):
+        now = 1000000.0
+        runs = os.path.join(self.home, "runs", "SHOT_010_comp_v003_ab12")
+
+        def put(node, state, job=True, **st):
+            work = os.path.join(runs, node)
+            os.makedirs(work)
+            if job:
+                core.write_json(os.path.join(work, core.JOB), {"work": work, "n": 4, "name": node + "_ck",
+                                                               "script": "X:/SHOT_010_comp_v003.nk", "node": node})
+            core.write_json(os.path.join(work, core.STATE), dict(st, estado=state))
+            return work
+        put("espera2", "en cola", t=now - 10)
+        put("espera1", "en cola", t=now - 20)
+        w = put("corre", "procesando", t=now - 5, inicio=now - 75, out_name="out_1")
+        with open(os.path.join(w, "run.log"), "w") as f:
+            f.write("window 1/2\n")
+        put("listo_hace_1h", "publicado", t=now - 3600, segundos=132)
+        put("error_reciente", "error", t=now - 60, msg="CorridorKey falló:\n\nCUDA error: algo\n\nLog completo: x")
+        put("viejo", "publicado", t=now - 30 * 3600)
+        put("sin_trabajo", "en cola", job=False, t=now)
+        rows = core.queue_rows(now=now)
+        self.assertEqual([r["shot"] for r in rows], ["corre_ck", "espera1_ck", "espera2_ck", "error_reciente_ck",
+                                                     "listo_hace_1h_ck"])
+        corre, err, done = rows[0], rows[3], rows[4]
+        self.assertEqual((round(corre["avance"], 2), corre["tiempo"], corre["texto"]), (0.35, "1 min 15 s", "Procesando"))
+        self.assertEqual(err["detalle"], "CUDA error: algo")
+        self.assertEqual(done["tiempo"], "2 min 12 s")
+        self.assertEqual((core.fmt_secs(45), core.fmt_secs(60)), ("45 s", "1 min 00 s"))
+
+    def test_retry_window_y_json(self):
+        self.assertEqual(core.retry_window(None, 24, "hann_chunk=8"), (8, 4))
+        self.assertEqual(core.retry_window(None, 24, ""), (24, 16))
+        self.assertEqual(core.retry_window(1, 24, ""), (1, None))
+        p = os.path.join(self.home, "x.json")
+        self.assertIsNone(core.read_json(p))
+        core.write_json(p, {"á": [1, "ñ"]})
+        self.assertEqual(core.read_json(p), {"á": [1, "ñ"]})
 
 
 @unittest.skipUnless(os.name == "nt", "WMI solo en Windows")
