@@ -1,6 +1,6 @@
 # Roadmap de CorridorKey para Nuke
 
-Estado al 2026-11-13. Versión en el repo: **0.8.0**, probada en GUI con shots reales (la 0.6 nunca se repartió). Última versión repartida (ZIP): 0.5.1; la 0.7.1 está en Releases.
+Estado al 2026-11-13. Versión en el repo: **0.8.0**, probada en GUI con shots reales (la 0.6 nunca se repartió). Última versión repartida (ZIP): 0.5.1; la 0.8.0 está en Releases.
 
 ## Hecho
 
@@ -14,7 +14,7 @@ Estado al 2026-11-13. Versión en el repo: **0.8.0**, probada en GUI con shots r
 | 0.6 | Panel en secciones, casilla "Usar hint", hint solo en el primer frame, calidad interna del hint, hint sin arrastre, memoria baja manual, "Original en zonas sólidas". |
 | 0.7 | Panel con el diseño de SHARP Splat y flujo en 3 pasos; la carpeta de salida muestra la ruta automática (también con el script sin guardar). "Plate original en el interior" marcada por defecto. El aviso de GPU ocupada lista los procesos. Poca VRAM: ventana según la tabla de CorridorKey para cada tarjeta, ventanas 2 y 4, reintento automático si falta memoria, memoria Auto / Baja / Mínima. |
 | 0.7.1 | Suavidad del borde en "plate original en el interior". Layers `ck_fg` y `ck_fg_raw` para sacar con un Shuffle. Arregla "Missing input channel" en los nodos que aún no tienen resultado. |
-| 0.8.0 | Cola de procesado: Procesar seleccionados sin bloquear Nuke, un shot tras otro en segundo plano; sigue aunque se cierre Nuke y publica al reabrir. Cancelar cola. Hint en un frame de referencia. Panel de la cola. El estado da el tiempo en minutos; sección "ajustes de color" y "color croma". (Sin repartir todavía.) |
+| 0.8.0 | Cola de procesado: Procesar seleccionados sin bloquear Nuke, un shot tras otro en segundo plano; sigue aunque se cierre Nuke y publica al reabrir. Cancelar cola. Hint en un frame de referencia. Panel de la cola. El estado da el tiempo en minutos; sección "ajustes de color" y "color croma". |
 
 ## Para cerrar la 0.7.0
 
